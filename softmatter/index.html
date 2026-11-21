@@ -1,0 +1,1021 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Soft Matter 08</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600&family=Inter:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#bdb7de; --ink:#ffffff; }
+  html,body{margin:0;height:100%;background:#9f98c7;display:grid;place-items:center;overflow:hidden;font-family:Inter,system-ui,sans-serif}
+  #stage{position:relative;width:min(100vmin,720px);aspect-ratio:1/1;}
+  #stage canvas{position:absolute;inset:0;width:100%!important;height:100%!important;display:block}
+  #hud{position:absolute;inset:0;pointer-events:none;color:var(--ink)}
+  #hud svg{width:100%;height:100%;display:block}
+  .cond{font-family:"Barlow Condensed",sans-serif;font-weight:600;letter-spacing:.02em}
+  .sans{font-family:Inter,sans-serif;font-weight:700}
+  .small{font-family:Inter,sans-serif;font-weight:500}
+  #ctl{position:fixed;left:12px;bottom:10px;font:12px Inter,sans-serif;color:#fff;opacity:.75}
+  #ctl button{font:inherit;background:#0003;color:#fff;border:1px solid #fff6;border-radius:4px;padding:3px 8px;cursor:pointer}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="hud">
+    <svg viewBox="0 0 720 720" fill="#fff">
+      <!-- top-left ticks -->
+      <rect x="158" y="142" width="2" height="14"/><rect x="186" y="142" width="2" height="14"/>
+      <!-- dot matrix (left column glyph) -->
+      <g id="dots"></g>
+      <!-- rotated '08' -->
+      <text class="cond" x="0" y="0" font-size="15" transform="translate(280 266) rotate(90)">08</text>
+      <text class="cond" x="284" y="181" font-size="17">SPECIMEN DECK</text>
+      <text class="small" x="285" y="197" font-size="9.5">37.5665°N 126.9780°E</text>
+      <text class="sans" x="565" y="141" font-size="13" letter-spacing=".5">sfm·08</text>
+      <!-- hatch squares -->
+      <g id="hatches"></g>
+      <!-- right dashes -->
+      <rect x="432" y="292" width="14" height="2"/><rect x="432" y="319" width="14" height="2"/>
+      <rect x="432" y="374" width="10" height="2"/><text id="sigl" class="small" x="432" y="383" font-size="4.6">SIG 1kHz · SINE</text>
+      <!-- dotted rows -->
+      <g id="pips"></g>
+      <!-- title -->
+      <text class="sans" x="344" y="447" font-size="21">Afterform</text>
+      <text class="sans" x="344" y="474" font-size="21">LAB-08.</text>
+      <rect x="344" y="488" width="134" height="2.4"/>
+      <rect x="344" y="487" width="16" height="5"/>
+      <text class="small" x="328" y="492" font-size="4.6">INC. 08</text>
+      <!-- vertical place -->
+      <text class="small" font-size="10" transform="translate(567 512) rotate(-90)">Seoul, Mapo-gu</text>
+      <text class="small" font-size="10" transform="translate(580 512) rotate(-90)">KOR</text>
+      <!-- bottom-left -->
+      <text class="small" x="131" y="563" font-size="10.5">Soft Matter Research</text>
+      <text class="small" x="131" y="577" font-size="10.5">and Deformation Archive</text>
+      <!-- plus -->
+      <rect x="471" y="554" width="14" height="2"/><rect x="477" y="548" width="2" height="14"/>
+      <!-- bracket -->
+      <g fill="none" stroke="#fff" stroke-width="2">
+        <path d="M526 538v-8h8M570 530h8v8M526 572v8h8M570 580h8v-8"/>
+      </g>
+      <text class="small" x="525" y="609" font-size="9.5">#specimen_afterform</text>
+    </svg>
+  </div>
+</div>
+<div id="ctl"><button onclick="location.search=''">파형 5종</button> <button onclick="window.__switchVoice?window.__switchVoice('bird'):(location.search='?sig=bird')">새소리</button> <button onclick="window.__switchVoice?window.__switchVoice('tone'):(location.search='?sig=clay')">찰흙</button> <button id="reset" onclick="window.__clay&&(window.__clay.off.fill(0),window.__clay.TW.fill(0))">↺ 되돌리기</button> <span id="hint"></span> <button id="snd">🔊 소리 켜기</button> <button id="rec">● 12.5초 녹화(webm)</button> <span id="tc"></span></div>
+
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { MarchingCubes } from 'three/addons/objects/MarchingCubes.js';
+import { createSoundClay, SHAPES, VOICES, FEEL_SCHEMA, RULES } from './sound-clay.js';
+
+/* ---------- HUD 고정 요소 ---------- */
+const NS='http://www.w3.org/2000/svg';
+const mk=(tag,attrs,parent)=>{const e=document.createElementNS(NS,tag);for(const k in attrs)e.setAttribute(k,attrs[k]);parent.appendChild(e);return e;};
+const dotsG=document.getElementById('dots');
+// 원본의 점 매트릭스 배치(27px 그리드)
+const dotCells=[[1,0],[2,0],[0,1],[1,1],[0,2],[1,2],[0,3],[1,3],[2,3],[3,3],[1,4],[0,5],[1,6],[2,6],[0,7],[1,7],[2,7]];
+const dotEls=dotCells.map(([c,r])=>mk('circle',{cx:232+c*27,cy:143+r*27,r:5.6},dotsG));
+const hatch=(x,y,s=14)=>{const g=mk('g',{},document.getElementById('hatches'));
+  const cp='h'+x+'_'+y; const d=mk('clipPath',{id:cp},g); mk('rect',{x,y,width:s,height:s},d);
+  for(let i=-1;i<4;i++) mk('rect',{x:x+i*5,y:y-4,width:2.2,height:s+8,transform:`rotate(45 ${x+s/2} ${y+s/2})`,'clip-path':`url(#${cp})`},g);};
+[[570,221],[432,347],[285,415],[131,528]].forEach(([x,y])=>hatch(x,y));
+const pips=document.getElementById('pips');
+[[345,333],[360,333],[397,333],[525,391],[540,391],[578,391],[199,432],[199,467],[199,485],[346,501],[362,501],[399,501],[407,501]].forEach(([x,y])=>mk('circle',{cx:x,cy:y,r:1.8},pips));
+
+/* ---------- 3D ---------- */
+const stage=document.getElementById('stage');
+const SIZE=720;
+const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});
+renderer.setPixelRatio(Math.min(2,devicePixelRatio));
+renderer.setSize(SIZE,SIZE,false);
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=0.95;
+stage.insertBefore(renderer.domElement,stage.firstChild);
+
+const scene=new THREE.Scene();
+// 라벤더 배경(좌상단 밝고 우하단 살짝 진함)
+{const c=document.createElement('canvas');c.width=c.height=512;const g=c.getContext('2d');
+ const lg=g.createLinearGradient(0,0,512,512);lg.addColorStop(0,'#c6c1e2');lg.addColorStop(1,'#b0a8d6');
+ g.fillStyle=lg;g.fillRect(0,0,512,512);
+ const rg=g.createRadialGradient(170,300,10,170,300,260);rg.addColorStop(0,'rgba(255,255,255,.12)');rg.addColorStop(1,'rgba(255,255,255,0)');
+ g.fillStyle=rg;g.fillRect(0,0,512,512);
+ const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;scene.background=t;}
+
+const pmrem=new THREE.PMREMGenerator(renderer);
+// RoomEnvironment에 색 조명을 섞어 박막 반사에 청록·마젠타가 잘 생기게 함
+const envScene=new RoomEnvironment();
+const addLight=(color,pos,s)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshBasicMaterial({color}));
+  m.material.color.multiplyScalar(s);m.position.set(...pos);m.scale.set(3,3,.2);m.lookAt(0,0,0);envScene.add(m);};
+addLight(0x20ffc0,[-6,2,4],10);addLight(0xff30d0,[6,-2,3],10);addLight(0x6a70ff,[0,6,-4],8);addLight(0x30e0ff,[2,-6,2],7);
+scene.environment=pmrem.fromScene(envScene,0.03).texture;
+
+const camera=new THREE.PerspectiveCamera(30,1,0.1,100);
+camera.position.set(0,0,8.4);
+
+/* 둥근 큐브: 고분할 박스를 '둥근 상자' 거리장으로 투영 */
+const N=56;
+let geo=new THREE.BoxGeometry(2,2,2,N,N,N);
+geo.deleteAttribute('normal');geo.deleteAttribute('uv');
+geo=mergeVertices(geo);
+const pos=geo.attributes.position;
+const count=pos.count;
+const base=new Float32Array(count*3);   // 단위 상자 위 좌표(-1..1)
+for(let i=0;i<count*3;i++) base[i]=pos.array[i];
+
+const mat=new THREE.MeshPhysicalMaterial({
+  color:0xe4c4ff, metalness:0.12, roughness:0.2,
+  transmission:0.22, thickness:1.0, ior:1.4,
+  iridescence:1, iridescenceIOR:2.0, iridescenceThicknessRange:[120,820],
+  clearcoat:1, clearcoatRoughness:0.12,
+  envMapIntensity:1.6,
+});
+const filmU={uHue:{value:0.62},uMix:{value:0.9}};
+mat.onBeforeCompile=(sh)=>{
+  Object.assign(sh.uniforms,filmU);
+  sh.fragmentShader='uniform float uHue; uniform float uMix;\n'+sh.fragmentShader;
+  sh.fragmentShader=sh.fragmentShader.replace('#include <opaque_fragment>',`
+  {
+    vec3 Nv=normalize(normal); vec3 Vv=normalize(vViewPosition);
+    float fr=1.0-abs(dot(Nv,Vv));
+    // 순환 4색: 마젠타 → 보라 → 청록 → 초록
+    float h=fract(fr*1.15 + Nv.y*0.28 - Nv.x*0.22 + uHue);
+    vec3 c0=vec3(1.0,0.36,0.92), c1=vec3(0.56,0.42,1.0), c2=vec3(0.08,0.88,0.86), c3=vec3(0.45,0.98,0.62);
+    float k=h*4.0; vec3 pal = k<1.0?mix(c0,c1,k):k<2.0?mix(c1,c2,k-1.0):k<3.0?mix(c2,c3,k-2.0):mix(c3,c0,k-3.0);
+    float w=mix(smoothstep(0.3,0.78,fr), 0.55+0.45*fr, uMix-0.9);
+    outgoingLight = mix(outgoingLight*vec3(1.0,0.86,1.04), pal*(0.95+0.25*fr), w*min(uMix,1.0));
+  }
+  #include <opaque_fragment>`);
+};
+const mesh=new THREE.Mesh(geo,mat);
+const pivot=new THREE.Group();pivot.add(mesh);scene.add(pivot);
+
+/* ---------- 3D 심플렉스 노이즈 ---------- */
+const grad3=[[1,1,0],[-1,1,0],[1,-1,0],[-1,-1,0],[1,0,1],[-1,0,1],[1,0,-1],[-1,0,-1],[0,1,1],[0,-1,1],[0,1,-1],[0,-1,-1]];
+const perm=new Uint8Array(512);{const p=[];for(let i=0;i<256;i++)p[i]=i;let s=8;
+  for(let i=255;i>0;i--){s=(s*16807)%2147483647;const j=s%(i+1);[p[i],p[j]]=[p[j],p[i]];}
+  for(let i=0;i<512;i++)perm[i]=p[i&255];}
+function noise3(x,y,z){const F3=1/3,G3=1/6;const s=(x+y+z)*F3;const i=Math.floor(x+s),j=Math.floor(y+s),k=Math.floor(z+s);
+  const t=(i+j+k)*G3;const x0=x-i+t,y0=y-j+t,z0=z-k+t;let i1,j1,k1,i2,j2,k2;
+  if(x0>=y0){if(y0>=z0){i1=1;j1=0;k1=0;i2=1;j2=1;k2=0}else if(x0>=z0){i1=1;j1=0;k1=0;i2=1;j2=0;k2=1}else{i1=0;j1=0;k1=1;i2=1;j2=0;k2=1}}
+  else{if(y0<z0){i1=0;j1=0;k1=1;i2=0;j2=1;k2=1}else if(x0<z0){i1=0;j1=1;k1=0;i2=0;j2=1;k2=1}else{i1=0;j1=1;k1=0;i2=1;j2=1;k2=0}}
+  const x1=x0-i1+G3,y1=y0-j1+G3,z1=z0-k1+G3,x2=x0-i2+2*G3,y2=y0-j2+2*G3,z2=z0-k2+2*G3,x3=x0-1+.5,y3=y0-1+.5,z3=z0-1+.5;
+  const ii=i&255,jj=j&255,kk=k&255;let n=0;
+  const c=(tx,ty,tz,g)=>{let tt=.6-tx*tx-ty*ty-tz*tz;if(tt<0)return 0;tt*=tt;const gr=grad3[g%12];return tt*tt*(gr[0]*tx+gr[1]*ty+gr[2]*tz);};
+  n+=c(x0,y0,z0,perm[ii+perm[jj+perm[kk]]]);n+=c(x1,y1,z1,perm[ii+i1+perm[jj+j1+perm[kk+k1]]]);
+  n+=c(x2,y2,z2,perm[ii+i2+perm[jj+j2+perm[kk+k2]]]);n+=c(x3,y3,z3,perm[ii+1+perm[jj+1+perm[kk+1]]]);
+  return 32*n;}
+
+/* ---------- 신호: 1kHz 파형 5종(2.5초씩) ----------
+   같은 신호를 소리로 재생하고, 영상 프레임(1/30초)마다 특징값을 뽑아 오브젝트를 아주 조금 움직임 */
+const SR=48000, SIG_DUR=12.5, HZ=1000;
+const COMP=['SINE','SQUARE','NEEDLE','PINK','WHITE'];
+const SIGP=new URLSearchParams(location.search).get('sig');
+const MODE=SIGP==='bird'?'bird':SIGP==='clay'?'clay':'test';
+const INTERACTIVE=MODE==='clay'||MODE==='bird';
+const MUTE=new URLSearchParams(location.search).has('mute');   // 검증용: 소리는 계산하되 스피커로는 안 냄   // 손으로 만지는 모드(찰흙·새소리)
+const NS_=Math.round(SR*SIG_DUR);
+const comp=COMP.map(()=>new Float32Array(NS_));   // 성분별 버퍼(합이 최종 소리)
+const pitch=new Float32Array(Math.ceil(SIG_DUR*30)); // 프레임별 음높이(Hz)
+const tag=new Array(Math.ceil(SIG_DUR*30)).fill('');  // 프레임별 구간 이름
+let seed=12345; const rnd=()=>{seed=(seed*1664525+1013904223)>>>0;return seed/4294967296*2-1;};
+const pinkGen=(()=>{let b0=0,b1=0,b2=0,b3=0,b4=0,b5=0,b6=0;   // Paul Kellet 핑크 필터
+  return ()=>{const w=rnd();b0=.99886*b0+w*.0555179;b1=.99332*b1+w*.0750759;b2=.969*b2+w*.153852;
+    b3=.8665*b3+w*.3104856;b4=.55*b4+w*.5329522;b5=-.7616*b5-w*.016898;const v=(b0+b1+b2+b3+b4+b5+b6+w*.5362)*0.11;b6=w*.115926;return v;};})();
+
+if(MODE==='test'){
+  // 1kHz 파형 5종, 2.5초씩
+  const per=SR/HZ;
+  for(let i=0;i<NS_;i++){
+    const t=i/SR, seg=Math.min(4,Math.floor(t/2.5)), ph=2*Math.PI*HZ*t;
+    const local=t-seg*2.5, fade=Math.max(0,Math.min(1,local/0.015,(2.5-local)/0.015)); // 경계 클릭 방지
+    const v=[Math.sin(ph)*0.7,(Math.sin(ph)>=0?1:-1)*0.45,(i%per)<2?0.9:0,pinkGen()*0.82,rnd()*0.4][seg];
+    comp[seg][i]=v*fade;
+  }
+  for(let f=0;f<pitch.length;f++){const seg=Math.min(4,Math.floor(f/30/2.5));pitch[f]=seg<3?HZ:0;tag[f]=COMP[seg];}
+}else if(MODE==='bird'){
+  /* 새소리: 다섯 파형이 같은 음높이 곡선을 따라가고, 섞는 비율은 음표 안에서 계속 바뀜
+     - 사인: 몸통(대부분)   - 스퀘어: 배음으로 살짝 거친 결   - 니들: 트릴의 '타닥'하는 버즈
+     - 화이트: 음 시작의 숨소리 버스트   - 핑크: 계속 깔리는 숲 공기 */
+  const notes=[]; let t=0.25;
+  const ORDER=['CHIRP','TRILL','WHISTLE','CHIRP','TRILL','WHISTLE','TRILL','CHIRP']; let oi=0;
+  while(t<12.1){
+    const kind=ORDER[oi++%ORDER.length];
+    if(kind==='TRILL'){const n=8+Math.floor((rnd()*.5+.5)*7),f0=3600+rnd()*500;
+      for(let k=0;k<n;k++){notes.push({t,d:0.042,f0:f0+400,f1:f0-300,vib:0,buzz:0.16,kind});t+=0.068;}}
+    else if(kind==='WHISTLE'){const n=2+Math.floor((rnd()*.5+.5)*2),f0=2700+rnd()*300;
+      for(let k=0;k<n;k++){notes.push({t,d:0.2,f0:f0+k*180,f1:f0+k*180+380,vib:110,buzz:0.0,kind});t+=0.27;}}
+    else {const n=3+Math.floor((rnd()*.5+.5)*3);
+      for(let k=0;k<n;k++){notes.push({t,d:0.075,f0:2300,f1:5600,vib:0,buzz:0.05,kind});t+=0.12;}}
+    t+=0.25+(rnd()*.5+.5)*0.4;
+  }
+  for(const nt of notes){
+    const a=Math.floor(nt.t*SR), len=Math.floor(nt.d*SR); let ph=0, lastWrap=0;
+    for(let j=0;j<len&&a+j<NS_;j++){
+      const u=j/len, tau=j/SR;
+      const f=nt.f0+(nt.f1-nt.f0)*(u<.5?2*u*u:1-2*(1-u)*(1-u)) + nt.vib*Math.sin(2*Math.PI*28*tau);
+      ph+=2*Math.PI*f/SR;
+      const env=Math.pow(Math.sin(Math.PI*u),1.5);
+      const s=Math.sin(ph);
+      comp[0][a+j]+=s*0.6*env;
+      comp[1][a+j]+=(s>=0?1:-1)*0.05*env;
+      const wraps=Math.floor(ph/(2*Math.PI)); if(wraps!==lastWrap){lastWrap=wraps;comp[2][a+j]+=nt.buzz*env;}
+      comp[4][a+j]+=rnd()*0.22*Math.exp(-tau/0.006)*Math.min(1,j/24);
+      const fr=Math.floor((a+j)/SR*30); if(fr<pitch.length&&env>0.5){pitch[fr]=f;tag[fr]=nt.kind;}
+    }
+  }
+  for(let i=0;i<NS_;i++) comp[3][i]=pinkGen()*0.06;       // 배경 공기
+  for(let f=0;f<tag.length;f++) if(!tag[f]) tag[f]='REST';
+}
+const sig=new Float32Array(NS_);
+for(let i=0;i<NS_;i++){let v=0;for(let k=0;k<5;k++)v+=comp[k][i];sig[i]=v;}
+
+// 프레임별 특징: rms(크기), hf(고역 비율), crest(뾰족함), share(성분별 에너지 비율)
+const FEAT=[];
+{
+  const win=SR/30;
+  for(let fI=0;fI<Math.ceil(SIG_DUR*30);fI++){
+    let s2=0,d2=0,pk=0;const a=fI*win;const e=[0,0,0,0,0];
+    for(let j=1;j<win;j++){const x=sig[a+j]||0,p=sig[a+j-1]||0;s2+=x*x;d2+=(x-p)*(x-p);pk=Math.max(pk,Math.abs(x));
+      for(let k=0;k<5;k++){const c=comp[k][a+j]||0;e[k]+=c*c;}}
+    const rms=Math.sqrt(s2/win), drms=Math.sqrt(d2/win), es=e.reduce((x,y)=>x+y,0)||1;
+    FEAT.push({rms, hf:Math.min(1,drms/(rms+1e-6)/1.41), crest:Math.min(1,Math.max(0,(pk/(rms+1e-6)-1.41)/6)),
+      share:e.map(x=>x/es), f0:pitch[fI], tag:tag[fI]});
+  }
+}
+const featAt=t=>FEAT[Math.min(FEAT.length-1,Math.max(0,Math.floor(t*30)))];
+const segAt=t=>featAt(t).tag;
+
+/* ---------- 타임라인(원본 프레임에서 잰 값) ---------- */
+const DUR=12.5;
+const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
+const ss=(a,b,x)=>{const t=clamp((x-a)/(b-a),0,1);return t*t*(3-2*t);};
+const lerp=(a,b,t)=>a+(b-a)*t;
+function params(t){
+  const inflate=ss(0.12,0.7,t);                 // 납작한 패널 → 입체
+  const blob=ss(0.35,1.0,t)*(1-ss(1.5,3.0,t));   // 크게 출렁이는 구간
+  const settle=ss(1.6,3.4,t);
+  return {
+    scale: lerp(0.62,1.0,ss(0.1,0.9,t)) + 0.05*blob,
+    depth: lerp(0.10,0.92,inflate),
+    radius: lerp(0.06,0.28,inflate),
+    pinch: Math.sin(Math.PI*ss(0.1,0.8,t))*0.2,       // 쿠션처럼 변이 오목해지는 순간
+    amp: (0.07 + 0.2*blob + 0.04*(1-settle))*inflate,
+    sphere: 0.7*blob,
+    freq: lerp(0.95,0.9,settle),
+    lobe: ss(5.0,11.0,t),                          // 뒤쪽 위로 자라는 혹
+    rx: lerp(0.0,0.42,ss(3.5,12.5,t)) + 0.1*blob,
+    ry: lerp(0.18,-0.32,ss(1.0,12.5,t)),
+    rz: lerp(0.0,-0.06,ss(5,12.5,t)) - 0.05*blob,
+    px: lerp(0,-0.18,ss(5,12.5,t)),
+    py: lerp(0.06,0.12,ss(5,12.5,t)),
+  };
+}
+const lobeDir=new THREE.Vector3(-0.55,0.75,-0.35).normalize();
+
+/* ---------- 찰흙 모드 상태 ---------- */
+const CLAY_T=4.2;                         // 큐브가 가라앉은 시점의 형태를 바탕으로 씀
+const off=new Float32Array(count*3);      // 손으로 만진 변위(누적, 로컬 좌표)
+const TW=new Float32Array(count*4);       // 정점별 질감 양: SQUARE·NEEDLE·PINK·WHITE (0~1)
+const TDIR=new Float32Array(count*3).fill(0.577); // SQUARE 줄무늬 방향(문지른 방향)
+let userRX=0, userRY=0;                   // 빈 곳 드래그 회전
+let VOL0=null;                            // 찰흙 처음 부피
+const LIVE={rms:0.5,hf:0,crest:0,share:[0.2,0.2,0.2,0.2,0.2],f0:1000,tag:'IDLE'};
+// 이웃 정점 목록(CSR) — 곡률·다듬기에 씀
+const NB_START=new Int32Array(count+1), NB=(()=>{
+  const idx=geo.index.array, sets=Array.from({length:count},()=>new Set());
+  for(let i=0;i<idx.length;i+=3){const a=idx[i],b=idx[i+1],c=idx[i+2];sets[a].add(b).add(c);sets[b].add(a).add(c);sets[c].add(a).add(b);}
+  let n=0;sets.forEach((s,i)=>{NB_START[i]=n;n+=s.size;});NB_START[count]=n;
+  const out=new Int32Array(n);let k=0;sets.forEach(s=>s.forEach(v=>out[k++]=v));return out;})();
+
+function deform(t,tr=t){
+  const P=params(t);
+  if(INTERACTIVE) P.amp*=0.5;            // 만진 모양이 잘 보이게 출렁임 절반
+  const r=P.radius, hx=1, hy=1, hz=P.depth;
+  const arr=pos.array;
+  const tm=tr*0.55;
+  // 신호 특징 → 변위 크기(단위: 오브젝트 반지름≈1 기준, 최대 1% 남짓)
+  const F=INTERACTIVE?LIVE:featAt(t), fi=Math.floor(tr*30);
+  const R=window.__react??(parseFloat(new URLSearchParams(location.search).get('react'))||1); // 반응 배율(?react=3 등)
+  const A={
+    breath: R*0.010*F.rms,
+    grain:  R*0.007*F.hf*Math.min(1,F.rms*4),
+    spike:  R*0.010*F.crest*Math.min(1,F.rms*6),
+    // 사인처럼 매끈한 신호는 위상이 천천히, 노이즈는 프레임마다 튐
+    gf: 5.0+Math.min(4,F.f0/1000),   // 음이 높을수록 결이 잘아짐
+    ph: tr*(0.6+5*F.hf) + (F.hf>0.6?Math.sin(fi*12.9898)*3.0:0),
+  };
+  for(let i=0;i<count;i++){
+    const bx=base[i*3],by=base[i*3+1],bz=base[i*3+2];
+    // 둥근 상자 투영
+    let px=bx*hx, py=by*hy, pz=bz*hz;
+    const qx=clamp(px,-(hx-r),hx-r), qy=clamp(py,-(hy-r),hy-r), qz=clamp(pz,-(hz-r),hz-r);
+    let dx=px-qx, dy=py-qy, dz=pz-qz; const dl=Math.hypot(dx,dy,dz)||1;
+    let nx=dx/dl, ny=dy/dl, nz=dz/dl;
+    px=qx+nx*r; py=qy+ny*r; pz=qz+nz*r;
+    // 쿠션 핀치: 변 가운데가 안으로
+    const pin=P.pinch*(1-Math.abs(by))*(Math.abs(bx)>0.98?1:0)+P.pinch*(1-Math.abs(bx))*(Math.abs(by)>0.98?1:0);
+    px-=Math.sign(px)*pin*0.35*(Math.abs(bx)>0.98?1:0); py-=Math.sign(py)*pin*0.35*(Math.abs(by)>0.98?1:0);
+    { const L0=Math.hypot(px,py,pz)||1; const k=P.sphere; px=lerp(px,px/L0*1.18,k); py=lerp(py,py/L0*1.18,k); pz=lerp(pz,pz/L0*1.18,k); }
+    // 방향(중심→점)으로 노이즈 변위
+    const L=Math.hypot(px,py,pz)||1; const ux=px/L,uy=py/L,uz=pz/L;
+    const f=P.freq;
+    let n=noise3(ux*f+tm, uy*f-tm*0.7, uz*f+tm*0.4)*0.88 + noise3(ux*f*1.9-tm, uy*f*1.9, uz*f*1.9+tm)*0.12;
+    let d=n*P.amp;
+    // 신호 반응(아주 미세하게): 크기→호흡, 고역→잔물결, 뾰족함→짧은 돌기
+    d+=A.breath + A.grain*noise3(ux*A.gf+A.ph, uy*A.gf-A.ph*0.6, uz*A.gf+A.ph*0.3)
+       + A.spike*Math.max(0,noise3(ux*11.0+A.ph*2.0, uy*11.0, uz*11.0-A.ph));
+    // 찰흙에 묻은 질감(소리 반응과 같은 결 단위)
+    const wq=TW[i*4],wn=TW[i*4+1],wp=TW[i*4+2],ww=TW[i*4+3];
+    if(wq+wn+wp+ww>0.002){
+      if(wq>0){const pr=px*TDIR[i*3]+py*TDIR[i*3+1]+pz*TDIR[i*3+2];d+=wq*0.018*Math.tanh(Math.sin(pr*24)*6);}   // 계단 줄무늬
+      if(wn>0) d+=wn*0.11*Math.pow(Math.max(0,noise3(ux*9+3,uy*9,uz*9-2)),5);   // 드문 가시
+      if(wp>0) d+=wp*0.06*noise3(ux*3.0+7,uy*3.0,uz*3.0);                       // 큰 얼룩
+      if(ww>0) d+=ww*0.016*noise3(ux*15,uy*15+5,uz*15);                        // 잔모래
+    }
+    // 혹
+    const dot=ux*lobeDir.x+uy*lobeDir.y+uz*lobeDir.z;
+    d+=P.lobe*0.42*Math.pow(Math.max(0,dot),6);
+    arr[i*3]=(px+ux*d)*P.scale+off[i*3]; arr[i*3+1]=(py+uy*d)*P.scale+off[i*3+1]; arr[i*3+2]=(pz+uz*d)*P.scale+off[i*3+2];
+  }
+  // 찰흙은 부피가 그대로: 당겨서 늘어난 만큼 전체를 줄여 처음 부피로 맞춤
+  if(INTERACTIVE){
+    const ix=geo.index.array;let V=0,cx=0,cy=0,cz=0;
+    for(let t=0;t<ix.length;t+=3){const A=ix[t]*3,B=ix[t+1]*3,C=ix[t+2]*3;
+      V+=arr[A]*(arr[B+1]*arr[C+2]-arr[B+2]*arr[C+1])-arr[A+1]*(arr[B]*arr[C+2]-arr[B+2]*arr[C])+arr[A+2]*(arr[B]*arr[C+1]-arr[B+1]*arr[C]);}
+    V/=6; if(!VOL0) VOL0=V;
+    const s=Math.cbrt(VOL0/Math.max(V,1e-6));
+    if(Math.abs(s-1)>1e-4){for(let i=0;i<count;i++){cx+=arr[i*3];cy+=arr[i*3+1];cz+=arr[i*3+2];}cx/=count;cy/=count;cz/=count;
+      for(let i=0;i<count;i++){arr[i*3]=cx+(arr[i*3]-cx)*s;arr[i*3+1]=cy+(arr[i*3+1]-cy)*s;arr[i*3+2]=cz+(arr[i*3+2]-cz)*s;}}
+  }
+  pos.needsUpdate=true;
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();             // 레이캐스트(찰흙 브러시)용
+  filmU.uHue.value=0.62-0.28*ss(3.5,10,t);
+  filmU.uMix.value=0.9+0.55*ss(4.5,11,t);
+  pivot.rotation.set(P.rx+userRX,P.ry+userRY,P.rz);
+  pivot.position.set(P.px,P.py,0);
+}
+
+/* HUD 미세 깜빡임: 점 매트릭스 일부가 박자에 맞춰 켜졌다 꺼짐 */
+const sigl=document.getElementById('sigl');
+/* 섞는 비율 패널(왼쪽 여백, 원본 HUD와 같은 흰 선·작은 글자) */
+const mixG=mk('g',{id:'mix'},document.querySelector('#hud svg'));
+const PX=40, PW=74;
+mk('text',{class:'cond',x:PX,y:236,'font-size':13},mixG).textContent='MIX RATIO';
+const f0T=mk('text',{class:'small',x:PX,y:249,'font-size':7.5},mixG);
+mk('rect',{x:PX,y:256,width:PW,height:1},mixG);
+const rows=COMP.map((name,i)=>{const y=274+i*25;
+  mk('text',{class:'small',x:PX,y,'font-size':7.5},mixG).textContent=name;
+  const pct=mk('text',{class:'small',x:PX+PW,y,'font-size':7.5,'text-anchor':'end'},mixG);
+  mk('rect',{x:PX,y:y+6,width:PW,height:1,opacity:0.4},mixG);
+  const bar=mk('rect',{x:PX,y:y+5,width:0,height:3},mixG);
+  return {pct,bar};});
+const srcT=mk('text',{class:'small',x:PX,y:410,'font-size':5.5},mixG);
+srcT.textContent=MODE==='bird'?'SRC · LIVE BIRD ← SHAPE + TEXTURE':INTERACTIVE?'SRC · TEXTURE → 5 OSC (LIVE)':'SRC · TEST TONE / 5 OSC';
+/* 형태 변수 패널(새소리 모드): 값은 처음 큐브 = ×1 기준 */
+const shapeRows=[];
+if(INTERACTIVE){
+  mk('text',{class:'cond',x:PX,y:432,'font-size':13},mixG).textContent='SHAPE → VOICE';
+  mk('rect',{x:PX,y:438,width:PW,height:1},mixG);
+  [['SIZE','PITCH'],['STRETCH','GLIDE'],['HORN','TRILL'],['LEAN','VIBRATO'],['FLAT','NOTE LEN'],['VOLUME','RING']].forEach(([a,b],i)=>{const y=452+i*19;
+    mk('text',{class:'small',x:PX,y,'font-size':6.5},mixG).textContent=a;
+    mk('text',{class:'small',x:PX,y:y+7,'font-size':4.8,opacity:0.75},mixG).textContent='→ '+b;
+    shapeRows.push(mk('text',{class:'small',x:PX+PW,y:y+3,'font-size':7.5,'text-anchor':'end'},mixG));});
+}
+function hud(t){
+  const F=INTERACTIVE?LIVE:featAt(t);
+  if(shapeRows.length&&CLAY){const V=CLAY.state.voice;
+    const v=[V.pitch,V.sweep,V.rate,V.vib,V.dur,V.ring];
+    shapeRows.forEach((e,i)=>e.textContent=i===3?('±'+v[i].toFixed(0)+'Hz'):i===5?((v[i]*100).toFixed(0)+'%'):('×'+v[i].toFixed(2)));}
+  sigl.textContent=(CLAY?'SIG '+CLAY.voice.toUpperCase()+' · ':'SIG 1kHz · ')+F.tag;
+  if(CLAY) srcT.textContent='SRC · LIVE '+CLAY.voice.toUpperCase()+' ← SHAPE + TEXTURE';
+  f0T.textContent=F.f0>0?('f0 '+(F.f0/1000).toFixed(2)+' kHz'):'f0 — (no pitch)';
+  rows.forEach((r,k)=>{const s=F.share[k];r.pct.textContent=(s*100).toFixed(s<0.1&&s>0?1:0)+'%';r.bar.setAttribute('width',(PW*s).toFixed(1));});
+  dotEls.forEach((e,i)=>{const on=Math.sin(t*3.1+i*1.7)>-0.85; e.setAttribute('opacity',on?1:0.15);});
+}
+
+/* ---------- 찰흙: 표면에 묻은 질감 → 믹스 비율 ----------
+   정점마다 질감 4종의 양(TW: SQUARE·NEEDLE·PINK·WHITE)을 저장. 아무것도 안 묻은 매끈한 면 = SINE.
+   믹스 비율 = 표면 전체에서 각 질감이 차지하는 평균. 덩치(평균 반지름)는 음높이만 바꿈. */
+let RM0=null;
+function updateMix(){
+  const a=pos.array;let cx=0,cy=0,cz=0;for(let i=0;i<count;i++){cx+=a[i*3];cy+=a[i*3+1];cz+=a[i*3+2];}cx/=count;cy/=count;cz/=count;
+  // 보이는 면만 센다: 카메라 쪽을 향한 정도로 가중
+  const cam=mesh.worldToLocal(camera.position.clone()), nrm=geo.attributes.normal.array;
+  let rs=0,ws=0;const m=[0,0,0,0];
+  for(let i=0;i<count;i++){
+    rs+=Math.hypot(a[i*3]-cx,a[i*3+1]-cy,a[i*3+2]-cz);
+    const vx=cam.x-a[i*3],vy=cam.y-a[i*3+1],vz=cam.z-a[i*3+2],vl=Math.hypot(vx,vy,vz);
+    const fw=Math.max(0,(nrm[i*3]*vx+nrm[i*3+1]*vy+nrm[i*3+2]*vz)/vl); if(fw===0) continue;
+    ws+=fw; for(let k=0;k<4;k++) m[k]+=TW[i*4+k]*fw;
+  }
+  const rm=rs/count; if(!RM0) RM0=rm; ws=ws||1;
+  const sq=m[0]/ws,nd=m[1]/ws,pk=m[2]/ws,wh=m[3]/ws;
+  if(MODE==='bird'){ birdSet([sq,nd,pk,wh],shapeVars(a,cx,cy,cz,rm)); return; }   // 새소리: 질감+형태 → 실시간 합성기로
+  const sine=Math.max(0,1-sq-nd-pk-wh);
+  const w=[sine,sq,nd,pk,wh], sum=w.reduce((x,y)=>x+y,0)||1;
+  LIVE.share=w.map(x=>x/sum);
+  LIVE.f0=Math.max(120,Math.min(4000,1000*Math.pow(RM0/rm,1.5)));   // 커지면 낮게, 작아지면 높게
+  LIVE.hf=Math.min(1,LIVE.share[4]+LIVE.share[2]*0.7);
+  LIVE.crest=LIVE.share[2];
+  synthSet();
+}
+/* ---------- 형태 → 소리 변수 ----------
+   공분산 고유값으로 길쭉함·납작함, 무게중심 이동으로 쏠림, 가장 먼 점으로 뿔을 잰다. 처음 큐브 값이 기준(×1). */
+let SV0=null;
+function eig3(xx,yy,zz,xy,xz,yz){        // 대칭 3×3 고유값(닫힌 꼴)
+  const p1=xy*xy+xz*xz+yz*yz, q=(xx+yy+zz)/3;
+  const p2=(xx-q)**2+(yy-q)**2+(zz-q)**2+2*p1, p=Math.sqrt(p2/6)||1e-9;
+  const b11=(xx-q)/p,b22=(yy-q)/p,b33=(zz-q)/p,b12=xy/p,b13=xz/p,b23=yz/p;
+  const r=(b11*(b22*b33-b23*b23)-b12*(b12*b33-b23*b13)+b13*(b12*b23-b22*b13))/2;
+  const phi=r<=-1?Math.PI/3:r>=1?0:Math.acos(r)/3;
+  const e1=q+2*p*Math.cos(phi), e3=q+2*p*Math.cos(phi+2*Math.PI/3); return [e1,3*q-e1-e3,e3];
+}
+const SHAPEV={size:1,stretch:1,horn:0,lean:0,flat:1};
+function shapeVars(a,cx,cy,cz,rm){
+  let xx=0,yy=0,zz=0,xy=0,xz=0,yz=0,rmax=0;
+  for(let i=0;i<count;i++){const x=a[i*3]-cx,y=a[i*3+1]-cy,z=a[i*3+2]-cz;
+    xx+=x*x;yy+=y*y;zz+=z*z;xy+=x*y;xz+=x*z;yz+=y*z;const r=Math.hypot(x,y,z);if(r>rmax)rmax=r;}
+  const [l1,l2,l3]=eig3(xx/count,yy/count,zz/count,xy/count,xz/count,yz/count);
+  const S={rm, elong:Math.sqrt(l1/Math.max(l2,1e-9)), flat:Math.sqrt(Math.max(l3,1e-9)/Math.max(l2,1e-9)), peak:rmax/rm, lean:Math.hypot(cx,cy,cz)/rm};
+  if(!SV0) SV0=S;
+  SHAPEV.size=rm/SV0.rm;                                        // 덩치
+  SHAPEV.stretch=Math.max(0.3,1+8.0*(S.elong-SV0.elong));       // 길쭉해진 정도
+  SHAPEV.horn=Math.max(0,(S.peak-SV0.peak)/0.9);                // 뿔(가장 먼 점이 튀어나온 정도)
+  SHAPEV.lean=Math.max(0,(S.lean-SV0.lean)/0.12);               // 한쪽으로 쏠린 정도
+  SHAPEV.flat=Math.max(0.3,Math.min(2.5,S.flat/SV0.flat));      // 납작해지면 <1
+  return SHAPEV;
+}
+
+/* ---------- 새소리: 실시간 합성(AudioWorklet) ----------
+   음표를 그때그때 형태 변수로 다시 계산: 덩치→음높이, 길쭉함→미끄러지는 폭, 뿔→트릴 속도, 쏠림→비브라토, 납작함→음 길이.
+   질감 4종은 음표 안 다섯 파형의 섞임을 바꿈. 실제 출력 에너지 비율을 30Hz로 돌려받아 패널에 표시. */
+const BIRD_WORKLET=`
+const ORDER=['CHIRP','TRILL','WHISTLE','CHIRP','TRILL','WHISTLE','TRILL','CHIRP'];
+class Bird extends AudioWorkletProcessor{
+  constructor(){super();this.P={pitch:1,sweep:1,rate:1,vib:0,dur:1,T:[0,0,0,0]};this.port.onmessage=e=>Object.assign(this.P,e.data);
+    this.t=0;this.next=0.15;this.notes=[];this.seed=99;this.oi=0;this.b=[0,0,0,0,0,0,0];this.b2=[0,0,0,0,0,0,0];
+    this.e=[0,0,0,0,0];this.s2=0;this.d2=0;this.pk=0;this.prev=0;this.n=0;this.f=0;this.tag='REST';}
+  rnd(){this.seed=(this.seed*1664525+1013904223)>>>0;return this.seed/4294967296*2-1;}
+  pink(b){const w=this.rnd();b[0]=.99886*b[0]+w*.0555179;b[1]=.99332*b[1]+w*.0750759;b[2]=.969*b[2]+w*.153852;b[3]=.8665*b[3]+w*.3104856;
+    b[4]=.55*b[4]+w*.5329522;b[5]=-.7616*b[5]-w*.016898;const v=(b[0]+b[1]+b[2]+b[3]+b[4]+b[5]+b[6]+w*.5362)*0.11;b[6]=w*.115926;return v;}
+  phrase(){const P=this.P,kind=ORDER[this.oi++%ORDER.length];let t=this.next;const u=()=>this.rnd()*.5+.5;
+    const add=(d,fa,fb,vib,buzz,gap)=>{this.notes.push({t,d:Math.min(d*P.dur,gap*0.92),fa:fa*P.pitch,fb:fb*P.pitch,vib:vib+P.vib,buzz,kind,ph:0,lw:0});t+=gap;};
+    if(kind==='TRILL'){const n=8+Math.floor(u()*7*P.rate),f0=3600+this.rnd()*500;for(let k=0;k<n;k++)add(0.042,f0+400*P.sweep,f0-300*P.sweep,0,0.16,0.068/P.rate);}
+    else if(kind==='WHISTLE'){const n=2+Math.floor(u()*2),f0=2700+this.rnd()*300;for(let k=0;k<n;k++)add(0.2,f0+k*180,f0+k*180+380*P.sweep,110,0,0.27/Math.sqrt(P.rate));}
+    else{const n=3+Math.floor(u()*3*P.rate);for(let k=0;k<n;k++){const mid=3950;add(0.075,mid-1650*P.sweep,mid+1650*P.sweep,0,0.05,0.12/P.rate);}}
+    this.next=t+(0.25+u()*0.4)/Math.sqrt(P.rate);}
+  process(_,outs){const o=outs[0][0],sr=sampleRate,P=this.P,T=P.T,Ts=Math.min(1,T[0]+T[1]+T[2]+T[3]);
+    const g0=0.6*(1-0.65*Ts),g1=0.05+0.5*T[0],gn=0.6*T[1],gw=0.35*T[3],gp=0.06+0.3*T[2];
+    for(let i=0;i<o.length;i++){const t=this.t;if(t>=this.next)this.phrase();
+      const c=[0,0,0,this.pink(this.b)*gp,0];let best=0;
+      for(let k=this.notes.length-1;k>=0;k--){const nt=this.notes[k];const tau=t-nt.t;if(tau<0)continue;if(tau>nt.d){this.notes.splice(k,1);continue;}
+        const uu=tau/nt.d,env=Math.pow(Math.sin(Math.PI*uu),1.5);
+        const f=Math.max(80,nt.fa+(nt.fb-nt.fa)*(uu<.5?2*uu*uu:1-2*(1-uu)*(1-uu))+nt.vib*Math.sin(2*Math.PI*28*tau));
+        nt.ph+=2*Math.PI*f/sr;const s=Math.sin(nt.ph);
+        c[0]+=s*g0*env;c[1]+=(s>=0?1:-1)*g1*env;
+        const w=Math.floor(nt.ph/(2*Math.PI));if(w!==nt.lw){nt.lw=w;c[2]+=(nt.buzz+gn)*env;}
+        c[4]+=this.rnd()*(0.22*Math.exp(-tau/0.006)*Math.min(1,tau*sr/24)+gw*env);
+        c[3]+=this.pink(this.b2)*0.5*T[2]*env;
+        if(env>best){best=env;this.f=f;this.tag=nt.kind;}}
+      if(best<0.3){this.tag='REST';}
+      let v=0;for(let k=0;k<5;k++){v+=c[k];this.e[k]+=c[k]*c[k];}
+      o[i]=Math.max(-1,Math.min(1,v*0.8));
+      this.s2+=v*v;this.d2+=(v-this.prev)*(v-this.prev);this.pk=Math.max(this.pk,Math.abs(v));this.prev=v;this.t+=1/sr;
+      if(++this.n>=1600){const es=this.e.reduce((x,y)=>x+y,0)||1,rms=Math.sqrt(this.s2/this.n),drms=Math.sqrt(this.d2/this.n);
+        this.port.postMessage({share:this.e.map(x=>x/es),rms,hf:Math.min(1,drms/(rms+1e-6)/1.41),crest:Math.min(1,Math.max(0,(this.pk/(rms+1e-6)-1.41)/6)),f0:this.tag==='REST'?0:this.f,tag:this.tag});
+        this.e=[0,0,0,0,0];this.s2=this.d2=this.pk=0;this.n=0;}}
+    return true;}}
+registerProcessor('bird',Bird);`;
+let bird=null;
+async function birdStart(){
+  if(bird) return; bird={pending:true};
+  const ac=new AudioContext();
+  await ac.audioWorklet.addModule(URL.createObjectURL(new Blob([BIRD_WORKLET],{type:'text/javascript'})));
+  const node=new AudioWorkletNode(ac,'bird',{outputChannelCount:[1]});
+  const g=ac.createGain();g.gain.value=MUTE?0:0.3;node.connect(g).connect(ac.destination);
+  node.port.onmessage=e=>{Object.assign(LIVE,e.data);};
+  bird={ac,node};
+  document.getElementById('snd').textContent='🔇 소리 끄기';
+}
+function birdStop(){ if(!bird||bird.pending) return; bird.ac.close(); bird=null; document.getElementById('snd').textContent='🔊 소리 켜기'; }
+function birdSet(T,S){
+  if(!bird||!bird.node) return;
+  bird.node.port.postMessage({T, pitch:Math.max(0.3,Math.min(3,Math.pow(1/S.size,1.5))), sweep:Math.min(4,S.stretch),
+    rate:Math.min(4,1+3*S.horn), vib:Math.min(900,700*S.lean), dur:S.flat});
+}
+
+/* 질감 묻히기: kind = sine(지우기)·square·needle·pink·white */
+const TI={square:0,needle:1,pink:2,white:3};
+function deposit(centerW,kind,amt,dirW,rad=BR){
+  const cL=mesh.worldToLocal(centerW.clone()), a=pos.array;
+  let dl=null; if(dirW){dl=mesh.worldToLocal(centerW.clone().add(dirW)).sub(cL); if(dl.lengthSq()>0) dl.normalize(); else dl=null;}
+  for(let i=0;i<count;i++){
+    const dx=a[i*3]-cL.x,dy=a[i*3+1]-cL.y,dz=a[i*3+2]-cL.z,d2=(dx*dx+dy*dy+dz*dz)/(rad*rad);
+    if(d2>=1) continue;
+    const f=(1-d2)*(1-d2)*amt;
+    if(kind==='sine'){for(let k=0;k<4;k++)TW[i*4+k]*=1-f;continue;}
+    const t=TI[kind];
+    for(let k=0;k<4;k++) TW[i*4+k]=k===t?TW[i*4+k]+f*(1-TW[i*4+k]):TW[i*4+k]*(1-f*0.6);
+    if(t===0&&dl){const q=Math.min(1,f*2);TDIR[i*3]+=(dl.x-TDIR[i*3])*q;TDIR[i*3+1]+=(dl.y-TDIR[i*3+1])*q;TDIR[i*3+2]+=(dl.z-TDIR[i*3+2])*q;}
+  }
+}
+
+/* ---------- 찰흙: 실시간 소리(오실레이터 5개) ---------- */
+let syn=null;
+function synthStart(){
+  if(MODE==='bird'){ birdStart(); return; }
+  if(syn) return;
+  const ac=new AudioContext();
+  const master=ac.createGain();master.gain.value=MUTE?0:0.16;master.connect(ac.destination);
+  const mkG=()=>{const g=ac.createGain();g.gain.value=0;g.connect(master);return g;};
+  const sine=ac.createOscillator();sine.type='sine';
+  const sq=ac.createOscillator();sq.type='square';
+  const nd=ac.createOscillator();  // 니들: 배음이 모두 같은 세기인 주기파 = 대역 제한 임펄스열
+  {const H=48,re=new Float32Array(H+1),im=new Float32Array(H+1);for(let h=1;h<=H;h++)re[h]=1;nd.setPeriodicWave(ac.createPeriodicWave(re,im,{disableNormalization:false}));}
+  const noiseBuf=(pink)=>{const n=ac.sampleRate*2,b=ac.createBuffer(1,n,ac.sampleRate),d=b.getChannelData(0);
+    for(let i=0;i<n;i++)d[i]=pink?pinkGen()*0.82:rnd()*0.4;const s=ac.createBufferSource();s.buffer=b;s.loop=true;return s;};
+  const pk=noiseBuf(true), wh=noiseBuf(false);
+  const srcs=[sine,sq,nd,pk,wh], gains=srcs.map(()=>mkG());
+  srcs.forEach((s,k)=>{s.connect(gains[k]);s.start();});
+  syn={ac,gains,oscs:[sine,sq,nd],master};
+  synthSet();
+  document.getElementById('snd').textContent='🔇 소리 끄기';
+}
+function synthSet(){
+  if(!syn) return;
+  const now=syn.ac.currentTime, CAL=[0.9,0.38,0.55,1.0,0.75];   // 파형별 체감 크기 보정
+  syn.gains.forEach((g,k)=>g.gain.setTargetAtTime(CAL[k]*Math.sqrt(LIVE.share[k]),now,0.04));
+  syn.oscs.forEach(o=>o.frequency.setTargetAtTime(LIVE.f0,now,0.05));
+}
+function synthStop(){ if(MODE==='bird'){ birdStop(); return; } if(!syn) return; syn.ac.close(); syn=null; document.getElementById('snd').textContent='🔊 소리 켜기'; }
+
+/* ---------- 찰흙: 브러시 ---------- */
+const ray=new THREE.Raycaster(), ndc=new THREE.Vector2();
+let drag=null;   // {kind:'rub'|'pull'|'smooth'|'rotate', last:Vector3, plane, x,y}
+const toNDC=e=>{const r=renderer.domElement.getBoundingClientRect();ndc.set((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1);};
+const BR=0.34;   // 브러시 반경(큐브 반폭=1 기준)
+function brush(centerW,deltaW,kind){
+  const cL=mesh.worldToLocal(centerW.clone()), dL=mesh.worldToLocal(centerW.clone().add(deltaW)).sub(cL);
+  const a=pos.array, nrm=geo.attributes.normal.array, dlen=dL.length();
+  for(let i=0;i<count;i++){
+    const dx=a[i*3]-cL.x,dy=a[i*3+1]-cL.y,dz=a[i*3+2]-cL.z,d2=(dx*dx+dy*dy+dz*dz)/(BR*BR);
+    if(d2>=1) continue;
+    const f=(1-d2)*(1-d2);
+    {                        // 다듬기: 이웃 평균 쪽으로(문지르기·당기기는 아래 grab 방식)
+      let ax=0,ay=0,az=0;const s=NB_START[i],e=NB_START[i+1];for(let j=s;j<e;j++){const v=NB[j];ax+=a[v*3];ay+=a[v*3+1];az+=a[v*3+2];}
+      const n=e-s,k=f*0.5;off[i*3]+=(ax/n-a[i*3])*k;off[i*3+1]+=(ay/n-a[i*3+1])*k;off[i*3+2]+=(az/n-a[i*3+2])*k;
+    }
+  }
+}
+/* 찰흙 grab: 누른 순간의 영역·원래 변위를 기억하고, 드래그 중엔 '시작점→현재점' 한 번의 이동으로 다시 계산.
+   (작은 밀기를 계속 쌓으면 면이 겹쳐 접히고 찢어짐 → 쌓지 않음)
+   경계는 smoothstep로 부드럽게, 매번 이동량 자체를 이웃끼리 고르게 펴서 한 군데만 늘어진 삼각형이 안 생기게 함 */
+const smooth01=s=>s<=0?0:s>=1?1:s*s*(3-2*s);
+function grabBegin(hitW,kind){
+  // 찰흙: 손끝 주변 '심'(반경의 40%)은 통째로 같이 움직이고(w=1), 바깥으로 갈수록 부드럽게 0
+  const cL=mesh.worldToLocal(hitW.clone()), a=pos.array, R=kind==='pull'?0.85:0.6, Rc=R*0.4;
+  const idx=[],w=[],dd=[];
+  for(let i=0;i<count;i++){const d=Math.hypot(a[i*3]-cL.x,a[i*3+1]-cL.y,a[i*3+2]-cL.z);if(d<R){idx.push(i);dd.push(d/Rc);w.push(d<Rc?1:smooth01(1-(d-Rc)/(R-Rc)));}}
+  const D=Float32Array.from(dd);
+  const I=Int32Array.from(idx),W=Float32Array.from(w),o0=new Float32Array(I.length*3),p0=new Float32Array(I.length*3),n0=new Float32Array(I.length*3);
+  const nrm=geo.attributes.normal.array;
+  for(let k=0;k<I.length;k++){const i=I[k];for(let c=0;c<3;c++){o0[k*3+c]=off[i*3+c];p0[k*3+c]=a[i*3+c];n0[k*3+c]=nrm[i*3+c];}}
+  const slot=new Int32Array(count).fill(-1);I.forEach((v,k)=>slot[v]=k);
+  return {I,W,D,o0,p0,n0,cL,slot,startW:hitW.clone(),add:new Float32Array(I.length*3),tmp:new Float32Array(I.length*3)};
+}
+/* 손 뗄 때: 정점을 표면을 따라 고르게 다시 펴서(접선 방향) 늘어난 곳에 정점이 모자라지 않게,
+   접힌 주름만 살짝 펴기(법선 방향 약하게). 형태는 거의 그대로, 삼각형 크기만 고르게. */
+function relaxSurface(iter=6){
+  const a=pos.array, nrm=geo.attributes.normal.array, tmp=new Float32Array(count*3);
+  // 만진 곳(변위가 있는 정점)과 그 이웃 한 줄만 — 안 만진 큐브 모서리는 그대로 둠
+  const mask=new Uint8Array(count);
+  for(let i=0;i<count;i++) if(Math.abs(off[i*3])+Math.abs(off[i*3+1])+Math.abs(off[i*3+2])>0.004){mask[i]=1;for(let j=NB_START[i];j<NB_START[i+1];j++)mask[NB[j]]=1;}
+  for(let it=0;it<iter;it++){
+    tmp.fill(0);
+    for(let i=0;i<count;i++){
+      if(!mask[i]) continue;
+      let ax=0,ay=0,az=0;const s=NB_START[i],e=NB_START[i+1],n=e-s;
+      for(let j=s;j<e;j++){const v=NB[j];ax+=a[v*3];ay+=a[v*3+1];az+=a[v*3+2];}
+      let dx=ax/n-a[i*3],dy=ay/n-a[i*3+1],dz=az/n-a[i*3+2];
+      const dn=dx*nrm[i*3]+dy*nrm[i*3+1]+dz*nrm[i*3+2];
+      const tx=dx-dn*nrm[i*3],ty=dy-dn*nrm[i*3+1],tz=dz-dn*nrm[i*3+2];
+      tmp[i*3]=tx*0.5+dn*nrm[i*3]*0.12; tmp[i*3+1]=ty*0.5+dn*nrm[i*3+1]*0.12; tmp[i*3+2]=tz*0.5+dn*nrm[i*3+2]*0.12;
+    }
+    for(let i=0;i<count*3;i++){off[i]+=tmp[i];a[i]+=tmp[i];}
+  }
+}
+function grabMove(G,curW,kind){
+  const dL=mesh.worldToLocal(curW.clone()).sub(mesh.worldToLocal(G.startW.clone()));
+  const lim=kind==='pull'?1.0:0.25; if(dL.length()>lim) dL.setLength(lim);   // 한 번에 늘어나는 최대 길이
+  const {I,W,D,add,tmp,slot,p0,n0,cL}=G, len=dL.length(), dh=len>1e-6?dL.clone().divideScalar(len):new THREE.Vector3();
+  const gain=kind==='pull'?1:0.6, lift=kind==='pull'?0.5:0.0, neck=kind==='pull'?Math.min(0.45,len*0.5):0;
+  for(let k=0;k<I.length;k++){
+    const w=W[k], mid=4*w*(1-w);                 // 심(w=1)과 바깥(w=0) 사이 = 목
+    const dome=kind==='pull'?Math.max(0,1-D[k]*D[k])*len*0.22:0;   // 끝이 둥글게 부풀도록
+    // 1) 심은 통째로 손끝 따라  2) 표면에서 들어올려 두께  3) 목만 축 쪽으로 오므림  4) 끝 돔
+    const qx=p0[k*3]-cL.x,qy=p0[k*3+1]-cL.y,qz=p0[k*3+2]-cL.z, qd=qx*dh.x+qy*dh.y+qz*dh.z;
+    const lx=qx-qd*dh.x,ly=qy-qd*dh.y,lz=qz-qd*dh.z;
+    add[k*3]  =dL.x*w*gain+n0[k*3]  *w*len*lift-lx*mid*neck+dh.x*dome;
+    add[k*3+1]=dL.y*w*gain+n0[k*3+1]*w*len*lift-ly*mid*neck+dh.y*dome;
+    add[k*3+2]=dL.z*w*gain+n0[k*3+2]*w*len*lift-lz*mid*neck+dh.z*dome;
+  }
+  // 이동량 고르게 펴기(라플라시안 2회): 영역 밖 이웃은 0으로 봄
+  for(let it=0;it<2;it++){
+    for(let k=0;k<I.length;k++){const i=I[k];let sx=0,sy=0,sz=0;const s=NB_START[i],e=NB_START[i+1];
+      for(let j=s;j<e;j++){const q=slot[NB[j]];if(q>=0){sx+=add[q*3];sy+=add[q*3+1];sz+=add[q*3+2];}}
+      const n=e-s,m=0.35*(1-W[k]*0.7);   // 중심은 덜 펴서 손끝을 따라오게
+      tmp[k*3]=add[k*3]+(sx/n-add[k*3])*m;tmp[k*3+1]=add[k*3+1]+(sy/n-add[k*3+1])*m;tmp[k*3+2]=add[k*3+2]+(sz/n-add[k*3+2])*m;}
+    add.set(tmp);
+  }
+  for(let k=0;k<I.length;k++){const i=I[k];off[i*3]=G.o0[k*3]+add[k*3];off[i*3+1]=G.o0[k*3+1]+add[k*3+1];off[i*3+2]=G.o0[k*3+2]+add[k*3+2];}
+}
+if(false){   // (구버전: 정점 피부를 끌던 방식 — 찢어짐 문제로 아래 '찰흙 v2'로 교체)
+  const cv=renderer.domElement; cv.style.cursor='grab'; cv.style.touchAction='none';
+  cv.addEventListener('pointerdown',e=>{
+    try{cv.setPointerCapture(e.pointerId);}catch(_){} toNDC(e); ray.setFromCamera(ndc,camera);
+    const hit=ray.intersectObject(mesh)[0];
+    if(hit){
+      synthStart();
+      const kind=e.shiftKey?'pull':e.altKey?'smooth':'rub';
+      drag={kind,pid:e.pointerId,last:hit.point.clone(),plane:new THREE.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()).negate(),hit.point),
+            t0:performance.now(),lastMove:performance.now(),hist:[{x:e.clientX,y:e.clientY,t:performance.now()}],pdir:null,revs:[],trail:[hit.point.clone()]};
+      if(kind!=='smooth') drag.G=grabBegin(hit.point,kind);
+      LIVE.tag={rub:'RUB',pull:'PULL',smooth:'SMOOTH'}[kind]; cv.style.cursor='grabbing';
+    }else drag={kind:'rotate',pid:e.pointerId,x:e.clientX,y:e.clientY};
+  });
+  cv.addEventListener('pointermove',e=>{
+    if(!drag||e.buttons===0||e.pointerId!==drag.pid) return;   // 버튼 안 누른 이동·다른 포인터는 무시
+    if(drag.kind==='rotate'){userRY+=(e.clientX-drag.x)*0.008;userRX+=(e.clientY-drag.y)*0.008;drag.x=e.clientX;drag.y=e.clientY;return;}
+    toNDC(e); ray.setFromCamera(ndc,camera);
+    const p=ray.ray.intersectPlane(drag.plane,new THREE.Vector3()); if(!p) return;
+    const delta=p.clone().sub(drag.last); if(delta.lengthSq()<1e-8) return;
+    // 제스처 읽기: 속도(px/ms)·방향 반전 횟수
+    const now=performance.now(); drag.lastMove=now;
+    drag.hist.push({x:e.clientX,y:e.clientY,t:now}); while(drag.hist.length>2&&now-drag.hist[0].t>90) drag.hist.shift();
+    const h0=drag.hist[0], speed=Math.hypot(e.clientX-h0.x,e.clientY-h0.y)/Math.max(30,now-h0.t);
+    if(drag.hist.length>=3){const dx=e.clientX-h0.x,dy=e.clientY-h0.y,l=Math.hypot(dx,dy);
+      if(l>6){const d=[dx/l,dy/l]; if(drag.pdir&&d[0]*drag.pdir[0]+d[1]*drag.pdir[1]<-0.3) drag.revs.push(now); drag.pdir=d;}}
+    drag.revs=drag.revs.filter(t=>now-t<600);
+    drag.speed=speed;
+    let tex=null, amt=0.3;
+    if(speed<0.45){ if(!drag.slowSince) drag.slowSince=now; } else drag.slowSince=0;
+    if(drag.kind==='rub'){
+      if(drag.revs.length>=2){tex='square';LIVE.tag='SCRUB → SQUARE';}
+      else if(drag.revs.length>=1){LIVE.tag='SCRUB…';}                 // 방향 꺾는 중엔 느려져도 지우지 않음
+      else if(speed>1.3){tex='white';LIVE.tag='FAST → WHITE';}
+      else if(drag.slowSince&&now-drag.slowSince>250){tex='sine';amt=0.1;LIVE.tag='SLOW → SINE';}
+      else LIVE.tag='SMEAR';
+    }else if(drag.kind==='smooth'){tex='sine';amt=0.15;LIVE.tag='SMOOTH → SINE';}
+    // 큰 이동은 잘게 나눠서 끊김 없이
+    const steps=Math.max(1,Math.ceil(delta.length()/0.04)), st=delta.clone().divideScalar(steps);
+    for(let s=0;s<steps;s++){if(drag.kind==='smooth')brush(drag.last,st,'smooth'); if(tex) deposit(drag.last,tex,amt,st); drag.last.add(st);}
+    if(drag.G) grabMove(drag.G,p,drag.kind);
+    drag.trail.push(drag.last.clone()); if(drag.trail.length>8) drag.trail.shift();
+  });
+  const up=()=>{
+    // 튕기기: 짧고 빠르게 그은 획 → 끝자락에 가시
+    if(drag&&drag.kind==='rub'&&performance.now()-drag.t0<260&&(drag.speed||0)>1.0){
+      drag.trail.slice(-6).forEach(p=>deposit(p,'needle',0.8,null,BR*0.8)); LIVE.tag='FLICK → NEEDLE';
+      setTimeout(()=>{if(!drag)LIVE.tag='IDLE';},500);
+    }else LIVE.tag='IDLE';
+    if(drag&&drag.G) relaxSurface(6);   // 늘어난 곳 정점 고르게
+    drag=null;cv.style.cursor='grab';};
+  cv.addEventListener('pointerup',up);cv.addEventListener('pointercancel',up);
+}
+// 꾹 누르고 있기(움직임 없이 0.2초 넘게) → 핑크 얼룩이 계속 번짐
+function clayHold(){
+  if(drag&&drag.kind==='rub'&&performance.now()-drag.lastMove>200){deposit(drag.last,'pink',0.08,null,BR*1.4);LIVE.tag='HOLD → PINK';}
+}
+if(INTERACTIVE) document.getElementById('hint').textContent='천천히=SINE · 왔다갔다=SQUARE · 빠르게=WHITE · 튕기기=NEEDLE · 꾹=PINK · Shift 당기기 · Alt 다듬기 · 빈 곳 회전';
+window.__clay={brush,deposit,off,TW,updateMix,LIVE,mesh,camera,clayHold,SHAPEV,birdStart,getBird:()=>bird};   // 검증용
+
+/* =====================================================================
+   찰흙 v2 — 피부(정점)가 아니라 '부피'로 만든다.
+   큐브(둥근 상자 SDF) + 손으로 뽑아낸 덩어리(캡슐·구) + 눌러 판 홈을 부드럽게 합쳐 하나의 부피장으로 만들고,
+   바뀔 때마다 마칭큐브로 표면을 새로 뽑는다 → 찢어지거나 뒤집힐 수 없음, 뽑은 곳은 늘 둥근 목으로 이어짐.
+   부피는 처음 값으로 유지(뽑은 만큼 몸통이 줄어듦). 질감도 표면이 아니라 3D 격자에 칠해 부피장에 더함.
+   ===================================================================== */
+const CR=72, CE=3.0;                       // 마칭큐브 해상도, 다루는 공간 반폭(로컬 단위)
+const clayG=new THREE.Group(); pivot.add(clayG);
+let mc=null, mcBase=null, mcN=0, clayDirty=true;
+const strokes=[];                          // {type:'pull'|'dent', a:V3, b:V3}
+let baseS=1, VBOX1=null, TEXUSED=false;                   // 몸통 크기 배율, 크기 1일 때 몸통 부피
+const TGR=48, TEXG=new Float32Array(TGR*TGR*TGR*4), TDG=new Float32Array(TGR*TGR*TGR*3);
+const CSV={size:1,elong:1,flat:1,peak:1,lean:0}; let CSV0=null;
+if(false){   // (인라인 찰흙 v2 → sound-clay.js 모듈로 옮김)
+  mc=new MarchingCubes(CR,mat,false,false,150000);
+  mc.isolation=0; mc.scale.setScalar(CE); clayG.add(mc);
+  mesh.visible=false;
+}
+const sdBox=(x,y,z,s)=>{const r=0.28*s,hx=s-r,hy=s-r,hz=0.92*s-r;const qx=Math.abs(x)-hx,qy=Math.abs(y)-hy,qz=Math.abs(z)-hz;
+  const ax=qx>0?qx:0,ay=qy>0?qy:0,az=qz>0?qz:0;return Math.sqrt(ax*ax+ay*ay+az*az)+Math.min(Math.max(qx,qy,qz),0)-r;};
+const sdCap=(x,y,z,a,b,ra,rb)=>{const bx=b.x-a.x,by=b.y-a.y,bz=b.z-a.z,px=x-a.x,py=y-a.y,pz=z-a.z,bb=bx*bx+by*by+bz*bz||1e-9;
+  const h=Math.max(0,Math.min(1,(px*bx+py*by+pz*bz)/bb));const dx=px-bx*h,dy=py-by*h,dz=pz-bz*h;return Math.sqrt(dx*dx+dy*dy+dz*dz)-(ra+(rb-ra)*h);};
+const sminK=(a,b,k)=>{const h=Math.max(k-Math.abs(a-b),0)/k;return Math.min(a,b)-h*h*k*0.25;};
+const smaxK=(a,b,k)=>-sminK(-a,-b,k);
+function strokeShape(s){   // 당긴 길이에 따라 목은 가늘게, 끝 덩어리는 조금 작게(찰흙)
+  const len=Math.hypot(s.b.x-s.a.x,s.b.y-s.a.y,s.b.z-s.a.z);
+  return {len, neck:Math.max(0.15,0.3-0.08*len), end:Math.max(0.24,0.34-0.05*len)};}
+const tg=(v)=>Math.max(0,Math.min(TGR-1,Math.round((v/CE*0.5+0.5)*(TGR-1))));
+function texDisp(x,y,z){
+  const c=(tg(z)*TGR+tg(y))*TGR+tg(x), w0=TEXG[c*4],w1=TEXG[c*4+1],w2=TEXG[c*4+2],w3=TEXG[c*4+3];
+  if(w0+w1+w2+w3<0.003) return 0;
+  let d=0;
+  if(w0>0){const pr=x*TDG[c*3]+y*TDG[c*3+1]+z*TDG[c*3+2];d+=w0*0.022*Math.tanh(Math.sin(pr*22)*6);}   // SQUARE 계단 줄무늬
+  if(w1>0) d+=w1*0.12*Math.pow(Math.max(0,noise3(x*4.5+3,y*4.5,z*4.5-2)),4);                       // NEEDLE 가시
+  if(w2>0) d+=w2*0.07*noise3(x*1.6+7,y*1.6,z*1.6);                                                   // PINK 큰 얼룩
+  if(w3>0) d+=w3*0.022*noise3(x*7,y*7+5,z*7);                                                        // WHITE 잔모래
+  return d;}
+function buildClay(){
+  const N=CR, h=N/2, f=mc.field, toP=i=>(i-h)/h*CE;
+  const S=strokes.map(s=>{const sh=strokeShape(s),m=(s.type==='pull'?Math.max(sh.neck+0.06,sh.end):0.2)+0.45;
+    return {...s,...sh,x0:Math.min(s.a.x,s.b.x)-m,x1:Math.max(s.a.x,s.b.x)+m,y0:Math.min(s.a.y,s.b.y)-m,y1:Math.max(s.a.y,s.b.y)+m,z0:Math.min(s.a.z,s.b.z)-m,z1:Math.max(s.a.z,s.b.z)+m};});
+  let n=0,sx=0,sy=0,sz=0,sxx=0,syy=0,szz=0,sxy=0,sxz=0,syz=0,rmax=0, nb=0;
+  for(let z=0;z<N;z++){const pz=toP(z);for(let y=0;y<N;y++){const py=toP(y);for(let x=0;x<N;x++){const px=toP(x);
+    const q=x+y*N+z*N*N;
+    if(x<1||y<1||z<1||x>N-3||y>N-3||z>N-3){f[q]=-1;continue;}
+    let d=sdBox(px,py,pz,baseS); if(d<0)nb++;
+    for(const s of S){
+      if(px<s.x0||px>s.x1||py<s.y0||py>s.y1||pz<s.z0||pz>s.z1) continue;
+      if(s.type==='pull'){d=sminK(d,sdCap(px,py,pz,s.a,s.b,s.neck+0.06,s.neck),0.35);const ex=px-s.b.x,ey=py-s.b.y,ez=pz-s.b.z;d=sminK(d,Math.sqrt(ex*ex+ey*ey+ez*ez)-s.end,0.3);}
+      else d=smaxK(d,-sdCap(px,py,pz,s.a,s.b,0.2,0.2),0.18);
+    }
+    if(TEXUSED&&d>-0.25&&d<0.25) d-=texDisp(px,py,pz);
+    f[q]=-d;
+    if(d<0){n++;sx+=px;sy+=py;sz+=pz;const xx=px*px,yy=py*py,zz=pz*pz;sxx+=xx;syy+=yy;szz+=zz;sxy+=px*py;sxz+=px*pz;syz+=py*pz;const r2=xx+yy+zz;if(r2>rmax)rmax=r2;}
+  }}}
+  mc.normal_cache.fill(0); mc.update();
+  mcN=mc.count; mcBase=mc.positionArray.slice(0,mcN*3); mc.geometry.computeBoundingSphere();
+  // 부피 유지: 몸통 크기만 조절(뽑은 덩어리는 그대로)
+  const cell=(2*CE/N)**3, V=n*cell, Vb=nb*cell;
+  if(VBOX1===null){VBOX1=Vb/(baseS**3); CSV.V0=V;}
+  const Vextra=V-Vb, want=Math.max(0.2*VBOX1,CSV.V0-Vextra);
+  const ns=Math.cbrt(want/VBOX1); if(Math.abs(ns-baseS)>0.003){baseS=baseS+(ns-baseS)*0.7;clayDirty=true;}
+  // 형태 변수
+  if(n>0){const cx=sx/n,cy=sy/n,cz=sz/n;
+    const [l1,l2,l3]=eig3(sxx/n-cx*cx,syy/n-cy*cy,szz/n-cz*cz,sxy/n-cx*cy,sxz/n-cx*cz,syz/n-cy*cz);
+    rmax=Math.sqrt(rmax);const size=Math.sqrt(Math.max(1e-9,l1+l2+l3));
+    Object.assign(CSV,{size,elong:Math.sqrt(l1/Math.max(l2,1e-9)),flat:Math.sqrt(Math.max(l3,1e-9)/Math.max(l2,1e-9)),peak:rmax/size,lean:Math.hypot(cx,cy,cz)/size});
+    if(!CSV0) CSV0={...CSV};
+    SHAPEV.size=CSV.size/CSV0.size;
+    SHAPEV.stretch=Math.max(0.3,1+2.5*(CSV.elong-CSV0.elong));
+    SHAPEV.horn=Math.max(0,(CSV.peak-CSV0.peak)/0.8);
+    SHAPEV.lean=Math.max(0,(CSV.lean-CSV0.lean)/0.25);
+    SHAPEV.flat=Math.max(0.3,Math.min(2.5,CSV.flat/CSV0.flat));
+  }
+}
+/* 질감 칠하기(3D 격자) */
+function paint(cL,kind,amt,dirL,rad=0.34){
+  const r=Math.ceil(rad/CE*0.5*(TGR-1))+1, cx=tg(cL.x),cy=tg(cL.y),cz=tg(cL.z), step=2*CE/(TGR-1);
+  let dl=null; if(dirL&&dirL.lengthSq()>0) dl=dirL.clone().normalize();
+  for(let z=Math.max(0,cz-r);z<=Math.min(TGR-1,cz+r);z++)for(let y=Math.max(0,cy-r);y<=Math.min(TGR-1,cy+r);y++)for(let x=Math.max(0,cx-r);x<=Math.min(TGR-1,cx+r);x++){
+    const px=-CE+x*step,py=-CE+y*step,pz=-CE+z*step,d2=((px-cL.x)**2+(py-cL.y)**2+(pz-cL.z)**2)/(rad*rad);
+    if(d2>=1) continue;
+    const f=(1-d2)*(1-d2)*amt, c=(z*TGR+y)*TGR+x;
+    if(kind==='sine'){for(let k=0;k<4;k++)TEXG[c*4+k]*=1-f;continue;}
+    const t=TI[kind];
+    for(let k=0;k<4;k++) TEXG[c*4+k]=k===t?TEXG[c*4+k]+f*(1-TEXG[c*4+k]):TEXG[c*4+k]*(1-f*0.6);
+    if(t===0&&dl){const qq=Math.min(1,f*2);TDG[c*3]+=(dl.x-TDG[c*3])*qq;TDG[c*3+1]+=(dl.y-TDG[c*3+1])*qq;TDG[c*3+2]+=(dl.z-TDG[c*3+2])*qq;}
+  }
+  TEXUSED=true; clayDirty=true;
+}
+/* 보이는 면의 질감 비율 → 믹스(찰흙) 또는 새소리 합성기 */
+function clayMix(){
+  if(!mcN) return;
+  const cam=clayG.worldToLocal(camera.position.clone()), nA=mc.normalArray, m=[0,0,0,0]; let ws=0;
+  for(let i=0;i<mcN;i+=3){
+    const x=mcBase[i*3]*CE,y=mcBase[i*3+1]*CE,z=mcBase[i*3+2]*CE;
+    const nx=nA[i*3],ny=nA[i*3+1],nz=nA[i*3+2],nl=Math.hypot(nx,ny,nz)||1;
+    const vx=cam.x-x,vy=cam.y-y,vz=cam.z-z,vl=Math.hypot(vx,vy,vz);
+    const fw=Math.max(0,(nx*vx+ny*vy+nz*vz)/(nl*vl)); if(fw===0) continue;
+    const c=(tg(z)*TGR+tg(y))*TGR+tg(x); ws+=fw; for(let k=0;k<4;k++) m[k]+=TEXG[c*4+k]*fw;
+  }
+  ws=ws||1; const T=m.map(v=>v/ws);
+  if(MODE==='bird'){ birdSet(T,SHAPEV); return; }
+  const sine=Math.max(0,1-T[0]-T[1]-T[2]-T[3]), w=[sine,...T], sum=w.reduce((a,b)=>a+b,0)||1;
+  LIVE.share=w.map(v=>v/sum);
+  LIVE.f0=Math.max(120,Math.min(4000,1000*Math.pow(1/SHAPEV.size,1.5)));
+  LIVE.hf=Math.min(1,LIVE.share[4]+LIVE.share[2]*0.7); LIVE.crest=LIVE.share[2];
+  synthSet();
+}
+/* 매 프레임: 필요하면 부피 다시 뽑고, 출렁임·소리 반응은 표면 법선 방향으로만 살짝 */
+let clayMixTick=0;
+function clayFrame(tr){
+  if(clayDirty){clayDirty=false;buildClay();clayMix();}
+  else if((clayMixTick++%6)===0) clayMix();
+  const P=params(CLAY_T), F=LIVE, R=window.__react??(parseFloat(new URLSearchParams(location.search).get('react'))||1);
+  const A={breath:R*0.010*F.rms, grain:R*0.007*F.hf*Math.min(1,F.rms*4), spike:R*0.010*F.crest*Math.min(1,F.rms*6), gf:5+Math.min(4,(F.f0||0)/1000), ph:tr*(0.6+5*F.hf)};
+  const pa=mc.positionArray, nA=mc.normalArray, t=tr*0.55, inv=1/CE;
+  for(let i=0;i<mcN;i++){
+    const x=mcBase[i*3],y=mcBase[i*3+1],z=mcBase[i*3+2], X=x*CE,Y=y*CE,Z=z*CE;
+    let nx=nA[i*3],ny=nA[i*3+1],nz=nA[i*3+2];const nl=Math.hypot(nx,ny,nz)||1;nx/=nl;ny/=nl;nz/=nl;
+    let d=0.03*(Math.sin(X*1.7+t)*Math.sin(Y*1.5-t*0.8)+0.6*Math.sin(Z*1.9+t*0.6));
+    d+=A.breath+A.grain*Math.sin(X*A.gf+A.ph)*Math.sin(Y*A.gf-A.ph*0.6)+A.spike*Math.max(0,Math.sin(X*11+A.ph*2)*Math.sin(Z*11-A.ph));
+    d*=inv; pa[i*3]=x+nx*d; pa[i*3+1]=y+ny*d; pa[i*3+2]=z+nz*d;
+  }
+  mc.geometry.getAttribute('position').needsUpdate=true;
+  filmU.uHue.value=0.62-0.28*ss(3.5,10,CLAY_T); filmU.uMix.value=0.9+0.55*ss(4.5,11,CLAY_T);
+  pivot.rotation.set(P.rx+userRX,P.ry+userRY,P.rz); pivot.position.set(P.px,P.py,0);
+}
+/* 조작 v2: Shift+드래그 = 당겨 뽑기(덩어리) · Ctrl+드래그 = 눌러 홈 파기 · 드래그 = 문질러 질감 · Alt = 다듬기(질감 지우기) · 빈 곳 = 회전 */
+if(false){   // (인라인 조작 → 모듈로 옮김)
+  const cv=renderer.domElement; cv.style.cursor='grab'; cv.style.touchAction='none';
+  const loc=w=>clayG.worldToLocal(w.clone());
+  cv.addEventListener('pointerdown',e=>{
+    try{cv.setPointerCapture(e.pointerId);}catch(_){} toNDC(e); ray.setFromCamera(ndc,camera);
+    mc.updateMatrixWorld();
+    const hit=ray.intersectObject(mc)[0];
+    if(!hit){drag={kind:'rotate',pid:e.pointerId,x:e.clientX,y:e.clientY};return;}
+    synthStart();
+    // 왼드래그 = 당기기(기본) · 오른드래그 또는 Shift = 문질러 질감 · Ctrl = 홈 · Alt = 질감 지우기
+    const kind=(e.ctrlKey||e.metaKey)?'dent':e.altKey?'smooth':(e.button===2||e.shiftKey)?'rub':'pull';
+    const hl=loc(hit.point), inward=hl.clone().multiplyScalar(-1).normalize();
+    drag={kind,pid:e.pointerId,last:hit.point.clone(),plane:new THREE.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()).negate(),hit.point),
+      t0:performance.now(),lastMove:performance.now(),hist:[{x:e.clientX,y:e.clientY,t:performance.now()}],pdir:null,revs:[],trail:[hl.clone()]};
+    if(kind==='pull'){drag.stroke={type:'pull',a:hl.clone().addScaledVector(inward,0.3),b:hl.clone(),hit:hl.clone()};strokes.push(drag.stroke);}
+    if(kind==='dent'){drag.stroke={type:'dent',a:hl.clone().addScaledVector(inward,0.08),b:hl.clone().addScaledVector(inward,0.08)};strokes.push(drag.stroke);clayDirty=true;}
+    LIVE.tag={rub:'RUB',pull:'PULL',dent:'DENT',smooth:'SMOOTH'}[kind]; cv.style.cursor='grabbing';
+  });
+  cv.addEventListener('pointermove',e=>{
+    if(!drag||e.buttons===0||e.pointerId!==drag.pid) return;
+    if(drag.kind==='rotate'){userRY+=(e.clientX-drag.x)*0.008;userRX+=(e.clientY-drag.y)*0.008;drag.x=e.clientX;drag.y=e.clientY;return;}
+    toNDC(e); ray.setFromCamera(ndc,camera);
+    const p=ray.ray.intersectPlane(drag.plane,new THREE.Vector3()); if(!p) return;
+    const pl=loc(p);
+    const now=performance.now(); drag.lastMove=now;
+    drag.hist.push({x:e.clientX,y:e.clientY,t:now}); while(drag.hist.length>2&&now-drag.hist[0].t>90) drag.hist.shift();
+    const h0=drag.hist[0], speed=Math.hypot(e.clientX-h0.x,e.clientY-h0.y)/Math.max(30,now-h0.t);
+    if(drag.hist.length>=3){const dx=e.clientX-h0.x,dy=e.clientY-h0.y,l=Math.hypot(dx,dy);
+      if(l>6){const d=[dx/l,dy/l]; if(drag.pdir&&d[0]*drag.pdir[0]+d[1]*drag.pdir[1]<-0.3) drag.revs.push(now); drag.pdir=d;}}
+    drag.revs=drag.revs.filter(t=>now-t<600); drag.speed=speed;
+    if(speed<0.45){ if(!drag.slowSince) drag.slowSince=now; } else drag.slowSince=0;
+    if(drag.kind==='pull'){
+      const s=drag.stroke, v=pl.clone().sub(s.hit); if(v.length()>1.6) v.setLength(1.6);   // 최대로 뽑히는 길이
+      s.b.copy(s.hit).add(v);
+      const lim=CE-0.55; s.b.x=Math.max(-lim,Math.min(lim,s.b.x)); s.b.y=Math.max(-lim,Math.min(lim,s.b.y)); s.b.z=Math.max(-lim,Math.min(lim,s.b.z));   // 계산 공간 밖으로 나가 잘리지 않게
+      clayDirty=true; LIVE.tag='PULL'; return;
+    }
+    if(drag.kind==='dent'){   // 누른 채 끌면 홈이 길어짐(표면 근처만)
+      const s=drag.stroke, hp=ray.intersectObject(mc)[0]; if(hp){const q=loc(hp.point);s.b.copy(q.addScaledVector(q.clone().normalize(),-0.08));clayDirty=true;} LIVE.tag='DENT'; return;
+    }
+    let tex=null, amt=0.3;
+    if(drag.kind==='rub'){
+      if(drag.revs.length>=2){tex='square';LIVE.tag='SCRUB → SQUARE';}
+      else if(drag.revs.length>=1){LIVE.tag='SCRUB…';}
+      else if(speed>1.3){tex='white';LIVE.tag='FAST → WHITE';}
+      else if(drag.slowSince&&now-drag.slowSince>250){tex='sine';amt=0.1;LIVE.tag='SLOW → SINE';}
+      else LIVE.tag='SMEAR';
+    }else if(drag.kind==='smooth'){tex='sine';amt=0.15;LIVE.tag='SMOOTH → SINE';}
+    // 질감은 '표면 위' 손끝 자리에 칠함
+    const hp=ray.intersectObject(mc)[0];
+    if(hp){const q=loc(hp.point), prev=drag.trail[drag.trail.length-1]; if(tex) paint(q,tex,amt,q.clone().sub(prev)); drag.trail.push(q); if(drag.trail.length>8) drag.trail.shift();}
+  });
+  const up=()=>{
+    if(drag&&drag.kind==='rub'&&performance.now()-drag.t0<260&&(drag.speed||0)>1.0){
+      drag.trail.slice(-6).forEach(q=>paint(q,'needle',0.8,null,0.28)); LIVE.tag='FLICK → NEEDLE';
+      setTimeout(()=>{if(!drag)LIVE.tag='IDLE';},500);
+    }else LIVE.tag='IDLE';
+    drag=null;cv.style.cursor='grab';};
+  cv.addEventListener('pointerup',up);cv.addEventListener('pointercancel',up);
+  cv.addEventListener('contextmenu',e=>e.preventDefault());   // 오른드래그를 문지르기로 쓰려고 메뉴 막음
+  document.getElementById('hint').textContent='왼드래그 당기기 · Ctrl 홈 · 오른드래그(또는 Shift) 문지르기: 천천히=SINE 왔다갔다=SQUARE 빠르게=WHITE 튕기기=NEEDLE 꾹=PINK · Alt 지우기 · 빈 곳 회전';
+  document.getElementById('reset').onclick=()=>{strokes.length=0;TEXG.fill(0);baseS=1;clayDirty=true;};
+}
+function clayHold2(){
+  if(drag&&drag.kind==='rub'&&performance.now()-drag.lastMove>200&&drag.trail.length){paint(drag.trail[drag.trail.length-1],'pink',0.08,null,0.45);LIVE.tag='HOLD → PINK';}
+}
+window.__clay={...(window.__clay||{}),strokes,TEXG,buildClay,clayMix,clayFrame,LIVE,SHAPEV,mc,clayG,camera,clayHold2,birdStart,getBird:()=>bird,markDirty:()=>{clayDirty=true;}};
+
+const tc=document.getElementById('tc');
+const q=new URLSearchParams(location.search);
+const fixed=q.has('t')?parseFloat(q.get('t')):null;
+let fcount=0;
+/* ---------- 찰흙·새소리 모드 = sound-clay.js 모듈 사용 ---------- */
+let CLAY=null;
+const VOICE_SEL=(()=>{const v=new URLSearchParams(location.search).get('voice');return VOICES.includes(v)?v:(MODE==='bird'?'bird':'tone');})();
+if(INTERACTIVE){
+  mesh.visible=false;
+  CLAY=createSoundClay({THREE,MarchingCubes,parent:pivot,camera,canvas:renderer.domElement,material:mat,
+    base:SHAPES.roundBox(), voice:VOICE_SEL, mute:MUTE,
+    onFeelChange:f=>{try{localStorage.setItem('soundclay.feel.v2',JSON.stringify(f));}catch(_){} window.__feelPanel&&window.__feelPanel.refresh();}});
+  // 목소리 고르기(바꾸면 같은 모드로 다시 열림)
+  const sel=document.createElement('select');sel.style.cssText='font:inherit;background:#0003;color:#fff;border:1px solid #fff6;border-radius:4px;padding:2px 4px';
+  VOICES.forEach(v=>{const op=document.createElement('option');op.value=v;op.textContent='목소리: '+v;op.style.color='#000';if(v===VOICE_SEL)op.selected=true;sel.appendChild(op);});
+  // 목소리 바꾸기: 새로고침 없이 소리만 교체 → 만든 형태·질감·부피는 그대로, 새 목소리가 그 형태에 맞춰 바로 노래
+  const switchVoice=v=>{CLAY.setVoice(v);sel.value=v;const p=new URLSearchParams(location.search);p.set('voice',v);history.replaceState(null,'','?'+p.toString());};
+  sel.onchange=()=>switchVoice(sel.value);
+  window.__switchVoice=switchVoice;
+  /* 듣기: 🎤 내 목소리 · 🎵 음성 파일(버튼 또는 화면에 끌어다 놓기). 듣는 동안 합성 목소리는 꺼짐(마이크로 되먹임 방지) */
+  const ctl=document.getElementById('ctl'), before=document.getElementById('reset');
+  const micB=document.createElement('button');micB.textContent='🎤 내 목소리';ctl.insertBefore(micB,before);
+  const fileB=document.createElement('button');fileB.textContent='🎵 음성 파일';ctl.insertBefore(fileB,before);
+  const afile=document.createElement('input');afile.type='file';afile.accept='audio/*';afile.style.display='none';document.body.appendChild(afile);
+  const showListen=()=>{const l=CLAY.listening;micB.textContent=l==='MIC'?'⏹ 목소리 끄기':'🎤 내 목소리';fileB.textContent=l==='FILE'?'⏹ 파일 끄기':'🎵 음성 파일';};
+  micB.onclick=async()=>{if(CLAY.listening==='MIC'){CLAY.stopListening();}else{try{await CLAY.listen('mic');}catch(e){alert('마이크를 못 열었어: '+e.message);}}showListen();};
+  fileB.onclick=()=>{if(CLAY.listening==='FILE'){CLAY.stopListening();showListen();}else afile.click();};
+  const playFile=async f=>{try{await CLAY.listen(f);}catch(e){alert('음성 파일을 못 읽었어: '+e.message);}showListen();};
+  afile.onchange=()=>{if(afile.files[0])playFile(afile.files[0]);afile.value='';};
+  addEventListener('dragover',e=>{e.preventDefault();});
+  addEventListener('drop',e=>{e.preventDefault();const f=[...e.dataTransfer.files].find(x=>x.type.startsWith('audio/')||/\.(wav|mp3|m4a|ogg|flac|webm)$/i.test(x.name));if(f)playFile(f);});
+  document.getElementById('ctl').insertBefore(sel,document.getElementById('reset'));
+  /* ---------- 감각 패널: 주무르는 손맛 값 조절 → 프리셋(JSON)으로 복사·저장·불러오기 ----------
+     같은 JSON을 다른 화면에서 createSoundClay({feel}) 또는 clay.setFeel(json)으로 넣으면 같은 손맛. */
+  const FEEL_LS='soundclay.feel.v2';   // v2: 기본 강성 0.8·최대 길이 1.2(예전 저장값이 새 기본을 덮지 않게)
+  try{const saved=localStorage.getItem(FEEL_LS);if(saved)CLAY.setFeel(JSON.parse(saved));}catch(_){}
+  const fb=document.createElement('button');fb.textContent='감각';document.getElementById('ctl').insertBefore(fb,document.getElementById('reset'));
+  const fp=document.createElement('div');
+  fp.style.cssText='position:fixed;right:12px;top:12px;width:260px;max-height:calc(100vh - 80px);overflow:auto;background:#1c1830e6;color:#fff;font:11px Inter,sans-serif;border:1px solid #fff3;border-radius:8px;padding:10px 12px;display:none;z-index:50';
+  document.body.appendChild(fp);
+  const head=document.createElement('div');head.style.cssText='display:flex;justify-content:space-between;align-items:center;margin-bottom:6px';
+  head.innerHTML='<b style="font-size:12px">감각 프리셋</b>';fp.appendChild(head);
+  const rows={};const saveLS=()=>{try{localStorage.setItem(FEEL_LS,JSON.stringify(CLAY.getFeel()));}catch(_){}};
+  const refresh=()=>{const v=CLAY.getFeel().values;for(const k in rows){rows[k].r.value=v[k];rows[k].t.textContent=(+v[k]).toFixed(rows[k].d);}};
+  FEEL_SCHEMA.forEach(f=>{
+    const row=document.createElement('label');row.style.cssText='display:block;margin:6px 0';
+    const top=document.createElement('div');top.style.cssText='display:flex;justify-content:space-between;opacity:.85';
+    const name=document.createElement('span');name.textContent=f.label;const t=document.createElement('span');
+    const r=document.createElement('input');r.type='range';r.min=f.min;r.max=f.max;r.step=f.step;r.style.cssText='width:100%';
+    const d=Math.max(0,-Math.floor(Math.log10(f.step)));
+    r.oninput=()=>{CLAY.setFeel({values:{[f.key]:+r.value}});t.textContent=(+r.value).toFixed(d);saveLS();};
+    top.append(name,t);row.append(top,r);fp.appendChild(row);rows[f.key]={r,t,d};});
+  const bar=document.createElement('div');bar.style.cssText='display:flex;flex-wrap:wrap;gap:4px;margin-top:8px';
+  const mkB=(label,fn)=>{const b=document.createElement('button');b.textContent=label;b.onclick=fn;bar.appendChild(b);return b;};
+  const nameIn=document.createElement('input');nameIn.placeholder='프리셋 이름';nameIn.value='기본';nameIn.style.cssText='width:100%;margin-bottom:4px;font:inherit;background:#0004;color:#fff;border:1px solid #fff3;border-radius:4px;padding:3px 5px';
+  fp.appendChild(nameIn);
+  mkB('복사',async()=>{try{await navigator.clipboard.writeText(JSON.stringify(CLAY.getFeel(nameIn.value),null,2));fb.textContent='감각 ✓복사';setTimeout(()=>fb.textContent='감각',1200);}catch(_){alert(JSON.stringify(CLAY.getFeel(nameIn.value),null,2));}});
+  mkB('파일로 저장',()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(CLAY.getFeel(nameIn.value),null,2)],{type:'application/json'}));a.download=`sound-clay-feel_${nameIn.value||'preset'}.json`;a.click();});
+  const fileIn=document.createElement('input');fileIn.type='file';fileIn.accept='.json,application/json';fileIn.style.display='none';fp.appendChild(fileIn);
+  fileIn.onchange=async()=>{const f=fileIn.files[0];if(!f)return;try{const j=JSON.parse(await f.text());CLAY.setFeel(j);if(j.name)nameIn.value=j.name;refresh();saveLS();}catch(e){alert('프리셋을 읽지 못했어: '+e.message);}};
+  mkB('불러오기',()=>fileIn.click());
+  mkB('기본값',()=>{const v={};FEEL_SCHEMA.forEach(f=>v[f.key]=f.key==='stiffness'?RULES.pull.stiffness:f.key==='spread'?RULES.pull.spread:f.key.split('.').reduce((a,k)=>a[k],RULES));CLAY.setFeel({values:v});nameIn.value='기본';refresh();saveLS();});
+  fp.appendChild(bar);refresh();
+  fb.onclick=()=>{fp.style.display=fp.style.display==='none'?'block':'none';};
+  window.__feelPanel={refresh};
+  renderer.domElement.style.cursor='grab';
+  document.getElementById('hint').textContent='🎤 목소리·🎵 파일(끌어다 놓기) = 크기→부풀기·음높이→위로 늘어남·음색→질감 · Ctrl+Z 되돌리기 · Ctrl+Shift+Z 다시 · F 브러시 크기 · Shift+F 세기 · 왼드래그 당기기 · 휠 찰흙 더하기/덜기(부피→음높이·울림) · Ctrl 홈 · 오른드래그(또는 Shift) 문지르기: 천천히=SINE 왔다갔다=SQUARE 빠르게=WHITE 튕기기=NEEDLE 꾹=PINK · Alt 지우기 · 빈 곳 회전';
+  document.getElementById('reset').onclick=()=>CLAY.reset();
+  window.__soundClay=CLAY;
+}
+function clayModuleFrame(tr){
+  CLAY.update(tr);
+  const S=CLAY.state; Object.assign(LIVE,{share:S.share,f0:S.f0,tag:S.tag,rms:S.rms,hf:S.hf,crest:S.crest});
+  const P=params(CLAY_T);
+  filmU.uHue.value=0.62-0.28*ss(3.5,10,CLAY_T); filmU.uMix.value=0.9+0.55*ss(4.5,11,CLAY_T);
+  pivot.rotation.set(P.rx,P.ry,P.rz); pivot.position.set(P.px,P.py,0);
+  document.getElementById('snd').textContent=S.playing?'🔇 소리 끄기':'🔊 소리 켜기';
+}
+function frame(t,tr=t){if(INTERACTIVE)clayModuleFrame(tr);else deform(t,tr);hud(INTERACTIVE?tr:t);renderer.render(scene,camera);tc.textContent=INTERACTIVE?CLAY.voice.toUpperCase():t.toFixed(2)+'s';}
+window.__frame=frame;   // 검증·프레임 단위 렌더용
+
+let t0=performance.now();
+/* 소리: 같은 신호를 반복 재생, 재생 중엔 오디오 시계로 영상 시간을 맞춤 */
+let actx=null, aStart=0;
+function sigWav(){ // 16bit mono WAV
+  const n=sig.length,b=new ArrayBuffer(44+n*2),v=new DataView(b);const w=(o,s)=>[...s].forEach((c,i)=>v.setUint8(o+i,c.charCodeAt(0)));
+  w(0,'RIFF');v.setUint32(4,36+n*2,true);w(8,'WAVE');w(12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
+  v.setUint32(24,SR,true);v.setUint32(28,SR*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);w(36,'data');v.setUint32(40,n*2,true);
+  for(let i=0;i<n;i++)v.setInt16(44+i*2,Math.max(-1,Math.min(1,sig[i]))*32767*0.5,true);return new Blob([b],{type:'audio/wav'});}
+window.__sigWav=sigWav;
+document.getElementById('snd').onclick=async(e)=>{
+  if(INTERACTIVE){ CLAY.state.playing?CLAY.stop():CLAY.start(); return; }
+  if(actx){actx.close();actx=null;e.target.textContent='🔊 소리 켜기';return;}
+  actx=new AudioContext({sampleRate:SR});
+  const buf=actx.createBuffer(1,sig.length,SR);buf.copyToChannel(sig,0);
+  const src=actx.createBufferSource();src.buffer=buf;src.loop=true;
+  const g=actx.createGain();g.gain.value=0.25;src.connect(g).connect(actx.destination);
+  aStart=actx.currentTime+0.05;src.start(aStart);e.target.textContent='🔇 소리 끄기';
+};
+function loop(now){
+  if(INTERACTIVE){ frame(CLAY_T, now/1000); }
+  else if(fixed===null){
+    const t=actx?Math.max(0,actx.currentTime-aStart)%DUR:((now-t0)/1000)%DUR;
+    frame(t);
+  }
+  requestAnimationFrame(loop);}
+if(fixed!==null) frame(fixed);
+requestAnimationFrame(loop);
+
+/* 녹화: 캔버스+HUD를 합성한 캔버스에서 12.5초 webm */
+document.getElementById('rec').onclick=async()=>{
+  const out=document.createElement('canvas');out.width=out.height=SIZE;const g=out.getContext('2d');
+  const svg=document.querySelector('#hud svg');
+  const s=new XMLSerializer().serializeToString(svg).replace('<svg','<svg width="720" height="720"');
+  const img=new Image();img.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(s);await img.decode();
+  const rec=new MediaRecorder(out.captureStream(30),{mimeType:'video/webm;codecs=vp9',videoBitsPerSecond:12e6});
+  const chunks=[];rec.ondataavailable=e=>chunks.push(e.data);
+  rec.onstop=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(chunks,{type:'video/webm'}));a.download='afterform-08.webm';a.click();};
+  t0=performance.now();rec.start();
+  const draw=()=>{g.drawImage(renderer.domElement,0,0,SIZE,SIZE);g.drawImage(img,0,0);
+    if(performance.now()-t0<DUR*1000)requestAnimationFrame(draw);else rec.stop();};
+  draw();
+};
+</script>
+</body>
+</html>

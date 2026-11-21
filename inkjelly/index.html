@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ink Jelly</title>
+<style>
+  /* 레퍼런스(젤리판 + 잉크 조약돌, 회색 배경) 재현 화면 + 소리찰흙 모듈. 기본은 글자 없음, H 키로 패널·버튼 켜기 */
+  html,body{margin:0;height:100%;background:#dedede;overflow:hidden;font:11px/1.45 Inter,system-ui,sans-serif;color:#fff}
+  body{display:flex;align-items:center;justify-content:center}
+  #stage{position:relative}
+  canvas{display:block}
+  .off{display:none!important}
+  /* HUD: 03 index.html 의 MIX RATIO · SHAPE → VOICE 형식(흰 선·작은 글자) */
+  #hud{position:absolute;left:16px;top:16px;width:150px;pointer-events:none;mix-blend-mode:difference}
+  #hud h4{margin:12px 0 2px;font:600 13px/1 "Barlow Condensed",Inter,sans-serif;letter-spacing:.03em}
+  #hud .rule{height:1px;background:#fff;margin:4px 0 6px}
+  #hud .row{display:flex;justify-content:space-between;font-size:10px;margin-top:5px}
+  #hud .sub{font-size:8px;opacity:.7;margin-top:-1px}
+  #hud .bar{height:3px;background:#fff;margin-top:2px}
+  #hud .track{height:1px;background:#fff6;margin-top:-2px}
+  #ctl{position:absolute;left:12px;right:12px;bottom:10px;display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+  #ctl button,#ctl select{font:inherit;background:#0008;color:#fff;border:1px solid #fff5;border-radius:4px;padding:3px 8px;cursor:pointer}
+  #ctl select option{color:#000}
+  #hint{position:absolute;left:12px;right:12px;bottom:64px;font-size:10px;opacity:.85;mix-blend-mode:difference;pointer-events:none}
+  #hkey{position:absolute;right:10px;bottom:8px;font-size:10px;opacity:.28;color:#000;pointer-events:none}
+  #feel{position:absolute;right:12px;top:12px;width:250px;max-height:calc(100% - 70px);overflow:auto;background:#141110e8;border:1px solid #fff3;border-radius:8px;padding:10px 12px;z-index:50}
+  #feel label{display:block;margin:6px 0} #feel label div{display:flex;justify-content:space-between;opacity:.85}
+  #feel input[type=range]{width:100%}
+  #feel .bar{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+  #feel button,#feel input[type=text]{font:inherit;background:#0006;color:#fff;border:1px solid #fff4;border-radius:4px;padding:3px 6px}
+  #feel input[type=text]{width:100%;box-sizing:border-box;margin-bottom:4px}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="hud" class="off"></div>
+  <div id="hint" class="off">왼드래그 당기기 · Ctrl 드래그 홈 · 오른드래그(Shift) 문지르기: 천천히=SINE 왔다갔다=SQUARE 빠르게=WHITE 튕기기=NEEDLE 꾹=PINK · Alt 지우기 · 휠 찰흙 더하기/덜기 · F 브러시 크기 · Shift+F 세기 · Ctrl+Z / Ctrl+Shift+Z · 만진 젤리들은 계속 노래(■ 모두 멈춤) · 🎤·🎵(끌어다 놓기)는 마지막에 만진 젤리가 들음 · H 숨기기</div>
+  <div id="ctl" class="off"></div>
+  <div id="feel" class="off"></div>
+  <div id="hkey">H</div>
+</div>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { MarchingCubes } from 'three/addons/objects/MarchingCubes.js';
+// 모듈 사본(원본·관리: ../../03_소리찰흙/작업/sound-clay.js — 여기서는 고치지 않음, 새 판은 다시 복사)
+import { createSoundClay, SHAPES, VOICES, WAVES, FEEL_SCHEMA, RULES } from './sound-clay.js';
+
+/* ---------------------------------------------------------------
+   옵션
+   ?mute=1   → 소리 계산만, 스피커 출력 없음(테스트는 항상 이걸로)
+   ?t=4      → 레퍼런스 타임라인(0~8초)의 그 순간에 멈춤(정지 비교용)
+   ?still=1  → 움직임 멈춤(t=0 모습)
+   ?hud=1    → 패널·버튼 켠 채로 시작(기본은 꺼짐, H 키로 토글)
+   ?rec=1    → 720×1280, 24fps × 8초 프레임을 로컬 서버(/frame/N)로 보냄(영상 만들기용, 소리 꺼짐). ?rec=0,96 → 그 프레임만
+   --------------------------------------------------------------- */
+const q = new URLSearchParams(location.search);
+const REC = q.has('rec'), MUTE = q.has('mute') || REC;
+const FIXED_T = q.has('t') ? +q.get('t') : q.has('still') ? 0 : null;
+
+/* ---------- 프레임(9:16, 원본 720×1280) ---------- */
+const ASPECT = 9 / 16, FOV = 26, CAMZ = 12;
+const H = 2 * CAMZ * Math.tan(THREE.MathUtils.degToRad(FOV / 2)), W = H * ASPECT;   // z=0에서 보이는 프레임 크기(월드)
+const PX = W / 720;                                                                  // 원본 1픽셀 = 월드 길이
+const px2w = (x, y) => [(x / 720 - 0.5) * W, (0.5 - y / 1280) * H];
+
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: REC });
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;   // 셰이더가 화면 값을 직접 냄
+stage.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color().setRGB(0.871, 0.871, 0.871, THREE.LinearSRGBColorSpace);   // 원본 배경 222,222,222 (출력이 선형 그대로라 값 그대로)
+const camera = new THREE.PerspectiveCamera(FOV, ASPECT, 0.1, 100);
+camera.position.set(0, 0, CAMZ);
+
+const shared = { uTime: { value: 0 }, uRes: { value: new THREE.Vector2(1, 1) } };
+function fit() {
+  let w, h;
+  if (REC) { w = 720; h = 1280; renderer.setPixelRatio(1); }
+  else { h = Math.min(innerHeight, innerWidth / ASPECT); w = h * ASPECT; renderer.setPixelRatio(Math.min(2, devicePixelRatio)); }
+  renderer.setSize(Math.round(w), Math.round(h));
+  stage.style.width = Math.round(w) + 'px'; stage.style.height = Math.round(h) + 'px';
+  shared.uRes.value.set(Math.round(w) * renderer.getPixelRatio(), Math.round(h) * renderer.getPixelRatio());
+}
+
+/* ---------- 젤리 재질 ----------
+   메시가 무엇이든(마칭큐브) position·normal만 있으면 동작. 색 무늬는 '오브젝트 공간'(uInv)에서 계산 → 당겨도 무늬가 따라감.
+   uKind 0 = 위 젤리판(우윳빛 + 가운데 빛 번짐 + 렌즈 돔), 1 = 아래 조약돌(맑은 민트 + 안쪽 잉크 덩어리) */
+const GLSL = /* glsl */`
+  uniform float uTime; uniform vec2 uRes;
+  float hash(vec2 p){ p = fract(p*vec2(443.897,441.423)); p += dot(p, p.yx+19.19); return fract((p.x+p.y)*p.x); }
+  float h3(vec3 p){ p = fract(p*0.3183099 + 0.1); p *= 17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }
+  float vnoise(vec3 x){ vec3 i = floor(x), f = fract(x); f = f*f*(3.0-2.0*f);
+    return mix(mix(mix(h3(i),h3(i+vec3(1,0,0)),f.x), mix(h3(i+vec3(0,1,0)),h3(i+vec3(1,1,0)),f.x), f.y),
+               mix(mix(h3(i+vec3(0,0,1)),h3(i+vec3(1,0,1)),f.x), mix(h3(i+vec3(0,1,1)),h3(i+vec3(1,1,1)),f.x), f.y), f.z); }
+  float fbm(vec3 p){ float a = 0.5, s = 0.0; for (int i = 0; i < 4; i++){ s += a*vnoise(p); p = p*2.03 + 7.1; a *= 0.5; } return s; }
+  vec3 grain(vec3 c){ float n = hash(gl_FragCoord.xy + fract(uTime*7.31)*vec2(91.7,53.3)) - 0.5; return c + n*0.022; }
+`;
+function makeJellyMaterial(kind, o = {}) {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      ...shared,
+      uKind: { value: kind }, uInv: { value: new THREE.Matrix4() },
+      uIor: { value: 1.42 },
+      uBg: { value: new THREE.Vector3(0.871, 0.871, 0.871) },
+      // 젤리판
+      uBody: { value: new THREE.Vector3(0.86, 0.80, 0.81) },
+      uGlowCol: { value: new THREE.Vector3(0.84, 0.26, 0.46) }, uLensCol: { value: new THREE.Vector3(0.90, 0.27, 0.55) },
+      uGlowC: { value: new THREE.Vector2(...(o.glowC || [0, 0])) }, uLensC: { value: new THREE.Vector2(...(o.lensC || [0, 0])) },
+      uLensR: { value: o.lensR || 0.4 }, uTop: { value: o.top || 0.3 },
+      uBub: { value: new THREE.Vector3(...(o.bub || [9, 9, 0.01])) }, uDent: { value: new THREE.Vector3(...(o.dent || [9, 9, 0.01])) },
+      // 조약돌 잉크
+      uInkC: { value: new THREE.Vector3(...(o.inkC || [0, 0, 0])) }, uInkR: { value: new THREE.Vector3(...(o.inkR || [1, 1, 1])) },
+      uBodyR: { value: new THREE.Vector3(...(o.bodyR || [1, 1, 1])) },
+      uInkP: { value: 0 }, uInkQ: { value: 0 }, uSwirl: { value: 0 },
+      uGrow: { value: 1 },   // 휠로 부피를 바꾸면 무늬(빛 번짐·잉크)도 같이 커짐 = ∛부피
+    },
+    vertexShader: /* glsl */`
+      varying vec3 vW, vN;
+      void main(){
+        vec4 wp = modelMatrix * vec4(position, 1.);
+        vW = wp.xyz; vN = normalize(mat3(modelMatrix) * normal);
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }`,
+    fragmentShader: GLSL + /* glsl */`
+      uniform int uKind; uniform mat4 uInv; uniform float uIor, uLensR, uTop, uInkP, uInkQ, uSwirl, uGrow;
+      uniform vec3 uBub, uDent, uBg, uBody, uGlowCol, uLensCol, uInkC, uInkR, uBodyR; uniform vec2 uGlowC, uLensC;
+      varying vec3 vW, vN;
+      // 반사로 보이는 스튜디오: 위·오른쪽이 밝은 큰 소프트박스, 아래는 바닥 회색
+      vec3 env(vec3 r){
+        float up = smoothstep(-0.3, 0.9, r.y*0.8 + r.x*0.35);
+        return mix(vec3(0.62,0.61,0.62), vec3(1.0), up);
+      }
+      // 잉크 밀도(오브젝트 공간). P: 0 자주 덩어리 → 1 초록 얼룩으로 퍼짐
+      float inkD(vec3 p){
+        vec3 d = (p - uInkC) / (uInkR * (1.0 + 0.30*uInkQ));
+        float e = length(d);
+        vec3 sp = p*1.9 + vec3(0.0, -uSwirl*0.25, uSwirl*0.18);
+        sp.xy += 0.35*vec2(sin(p.y*2.1 + uSwirl*0.6), cos(p.x*1.7 - uSwirl*0.5));   // 소용돌이
+        float n = fbm(sp);
+        e += uInkP * (n - 0.45) * 0.9;
+        return smoothstep(1.0, mix(0.86, 0.6, uInkP), e);
+      }
+      float ringLine(vec2 p, vec3 c){ float d = length(p - c.xy) - c.z; return exp(-pow(d/0.012, 2.0)); }
+      void main(){
+        vec3 n = normalize(vN);
+        vec3 v = normalize(vW - cameraPosition);
+        if (dot(n, v) > 0.0) n = -n;
+        float ndv = clamp(-dot(n, v), 0.0, 1.0);
+        vec3 pL = (uInv * vec4(vW, 1.)).xyz / uGrow, nL = normalize(mat3(uInv) * n), vL = normalize(mat3(uInv) * v);
+        vec3 rd = refract(vL, nL, 1.0/uIor);
+        vec3 rf = reflect(v, n);
+        float fres = 0.03 + 0.97*pow(1.0 - ndv, 4.0);
+        vec3 col;
+
+        if (uKind == 0) {
+          /* 젤리판: 우윳빛 몸통 + 가운데 빛 번짐(분홍→보라), 렌즈 돔 안은 더 진하게 */
+          vec2 qx = pL.xy + rd.xy*0.35;
+          vec2 g = (qx - uGlowC) / vec2(1.05, 0.88);
+          float glow = exp(-dot(g,g) / 0.55);
+          col = mix(uBody, uGlowCol, smoothstep(0.0, 0.85, glow));
+          col = mix(col, uBody*vec3(1.0,0.93,0.9), smoothstep(0.55, 0.05, ndv)*0.35);      // 가장자리 살짝 살구빛
+          float dl = length(pL.xy - uLensC);
+          float inLens = smoothstep(uLensR, uLensR - 0.05, dl) * smoothstep(uTop - 0.06, uTop + 0.02, pL.z);
+          vec2 ld = (pL.xy - uLensC) / uLensR;
+          vec3 lensCol = uLensCol * mix(0.86, 1.10, smoothstep(-0.8, 0.8, dot(ld, vec2(0.55, -0.83))));
+          col = mix(col, lensCol, inLens*0.95);
+          float onTop = smoothstep(uTop - 0.08, uTop, pL.z);
+          float inBub = smoothstep(uBub.z, uBub.z - 0.04, length(pL.xy - uBub.xy)) * onTop;
+          col = mix(col, mix(uBody, vec3(0.95), 0.35), inBub*0.75);
+          float rl = ringLine(pL.xy, vec3(uLensC, uLensR - 0.015)) + ringLine(pL.xy, uBub) * (1.0 - inLens);
+          col = mix(col, col*0.7, rl*onTop*0.7);
+          col += vec3(0.25) * ringLine(pL.xy, vec3(uLensC, uLensR + 0.02)) * onTop;
+          col *= mix(0.80, 1.0, smoothstep(0.02, 0.45, ndv));
+        } else {
+          /* 조약돌: 맑은 민트 젤리 + 안쪽 잉크(굴절된 시선을 따라 몇 걸음 들어가며 쌓음) */
+          vec3 tint = vec3(0.86, 0.94, 0.92);
+          vec3 base = uBg * tint;
+          vec3 halo0 = vec3(0.55, 0.12, 0.30), core0 = vec3(0.12, 0.04, 0.035);     // 자주
+          vec3 halo1 = vec3(0.30, 0.22, 0.40), core1 = vec3(0.06, 0.05, 0.06);     // 검보라(전환)
+          vec3 halo2 = vec3(0.12, 0.66, 0.45), core2 = vec3(0.04, 0.20, 0.13);     // 초록
+          float tP = uInkP;
+          vec3 halo = tP < 0.45 ? mix(halo0, halo1, tP/0.45) : mix(halo1, halo2, (tP-0.45)/0.55);
+          vec3 core = tP < 0.45 ? mix(core0, core1, tP/0.45) : mix(core1, core2, (tP-0.45)/0.55);
+          vec3 acc = vec3(0.0); float T = 1.0;
+          float st = 0.065; vec3 p = pL + rd * st * hash(gl_FragCoord.xy + fract(uTime)*13.1);
+          for (int i = 0; i < 30; i++){
+            p += rd * st;
+            float bnd = length(p / uBodyR);
+            if (bnd > 1.6) break;                                  // 당겨 나온 팔은 맑은 젤리(잉크는 원래 몸통 안에만)
+            float d = inkD(p) * smoothstep(1.06, 0.94, bnd);
+            if (d > 0.001){
+              float clump = smoothstep(0.52, 0.72, fbm(p*3.1 + vec3(uSwirl*0.15, 0.0, -uSwirl*0.1)));   // 초록 단계의 짙은 얼룩
+              vec3 c = mix(halo, core, smoothstep(mix(0.25, 0.5, tP), 0.95, d));
+              c = mix(c, core*0.45, clump * tP * 0.85);
+              float a = 1.0 - exp(-d * st * mix(14.0, 5.0, tP));
+              acc += T * a * c; T *= 1.0 - a;
+              if (T < 0.02) break;
+            }
+          }
+          col = base * T + acc;
+          col *= mix(0.72, 1.0, smoothstep(0.0, 0.42, ndv));
+          float onFront = smoothstep(0.1, 0.3, pL.z);
+          col = mix(col, col*0.75, ringLine(pL.xy, uDent)*onFront*0.6);
+          col += vec3(0.16) * ringLine(pL.xy, uDent + vec3(0.0, 0.0, 0.025)) * onFront;
+          col = mix(col, col*vec3(0.92,1.02,1.0), smoothstep(0.5, 0.1, ndv)*0.5);     // 가장자리 민트
+        }
+
+        // 반사 · 하이라이트
+        col = col*(1.0 - fres) + env(rf)*fres;
+        vec3 L1 = normalize(vec3(0.30, 0.78, 0.55)), L2 = normalize(vec3(0.75, 0.45, 0.50));
+        float s1 = pow(max(dot(rf, L1), 0.0), 140.0), s2 = pow(max(dot(rf, L2), 0.0), 380.0);
+        float s3 = pow(max(dot(rf, normalize(vec3(-0.55, 0.15, 0.82))), 0.0), 900.0);
+        col += vec3(1.0) * (s1*0.95 + s2*0.8 + s3*0.5);
+        gl_FragColor = vec4(grain(col), 1.0);
+      }`,
+  });
+}
+
+/* ---------- 거리함수(안쪽 음수, 월드 단위, 오브젝트 중심 기준) ---------- */
+const smin = (a, b, k) => { const h = Math.max(k - Math.abs(a - b), 0) / k; return Math.min(a, b) - h * h * k * 0.25; };
+const smax = (a, b, k) => -smin(-a, -b, k);
+// 젤리판: 원 세 개를 부드럽게 합치고 아래 가운데를 원으로 파서 '강낭콩' 윤곽 → 둥근 모서리로 두께를 줌 → 렌즈 돔·작은 방울
+function slabSDF(P) {
+  return (x, y, z) => {
+    let d2 = smin(smin(Math.hypot(x - P.l[0], y - P.l[1]) - P.l[2], Math.hypot(x - P.m[0], y - P.m[1]) - P.m[2], 0.7),
+                  Math.hypot(x - P.r[0], y - P.r[1]) - P.r[2], 0.7);
+    d2 = smax(d2, -(Math.hypot(x - P.c[0], y - P.c[1]) - P.c[2]), 0.35);
+    const re = P.edge, wx = d2 + re, wz = Math.abs(z) - P.half + re;
+    let d = Math.hypot(Math.max(wx, 0), Math.max(wz, 0)) + Math.min(Math.max(wx, wz), 0) - re;
+    for (const [cx, cy, a, h] of [P.lens, P.bub]) {                                     // 납작한 돔(구의 윗부분)
+      const R = (a * a + h * h) / (2 * h);
+      d = smin(d, Math.max(Math.hypot(x - cx, y - cy, z - (P.half + h - R)) - R, P.half * 0.4 - z), 0.05);
+    }
+    return d;
+  };
+}
+// 조약돌: 납작한 달걀(타원체) + 앞면 왼아래의 얕은 오목 렌즈
+function pebbleSDF(P) {
+  const [rx, ry, rz] = P.r;
+  return (x, y, z) => {
+    const k0 = Math.hypot(x / rx, y / ry, z / rz), k1 = Math.hypot(x / (rx * rx), y / (ry * ry), z / (rz * rz));
+    let d = k1 < 1e-9 ? -Math.min(rx, ry, rz) : k0 * (k0 - 1) / k1;
+    d += 0.06 * Math.max(0, x / rx) * (1 - Math.min(1, Math.abs(y / ry)));            // 오른쪽이 조금 더 부푼 달걀
+    d = smax(d, -(Math.hypot(x - P.dent[0], y - P.dent[1], z - P.dent[3]) - P.dent[2]), 0.08);
+    return d;
+  };
+}
+
+/* ---------- 오브젝트 목록(원본 첫 프레임 픽셀에서 잰 배치) ----------
+   위치는 원본 픽셀 좌표 → 월드. 크기는 월드 단위(원본 1px = PX) */
+const S = PX;
+const SLAB = { l: [-190 * S, -105 * S, 180 * S], m: [0 * S, 70 * S, 215 * S], r: [200 * S, -130 * S, 190 * S], c: [-20 * S, -610 * S, 410 * S],
+               half: 0.30, edge: 0.26, lens: [10 * S, 0, 108 * S, 0.13], bub: [146 * S, 72 * S, 74 * S, 0.13] };
+const PEB = { r: [1.50, 1.08, 0.72], dent: [-0.45, -0.50, 0.56, 0.95] };
+const LAYOUT = [
+  { name: 'slab', px: [360, 400], z: 0.0, rot: [-0.10, 0.06, 0.0], voice: 'toy', note: 164.81,   // E3
+    sdf: slabSDF(SLAB), grid: 80,
+    mat: { glowC: [-60 * S, 40 * S], lensC: [SLAB.lens[0], SLAB.lens[1]], lensR: SLAB.lens[2], top: SLAB.half, bub: [SLAB.bub[0], SLAB.bub[1], SLAB.bub[2]] } },
+  { name: 'pebble', px: [345, 915], z: 0.25, rot: [0.08, -0.10, THREE.MathUtils.degToRad(-12)], voice: 'toy', note: 220.00,  // A3
+    sdf: pebbleSDF(PEB), grid: 72,
+    mat: { inkC: [0.22, 0.10, 0.05], inkR: [0.98, 0.88, 0.62], bodyR: PEB.r, dent: [PEB.dent[0], PEB.dent[1], 0.47] } },
+];
+/* 화음 모드(sound-clay 5-1절): 04 물방울 화면과 같은 키(A 장화음 A·C#·E). 두 젤리가 E3·A3을 맡음(toy가 2~3음을 흩어 쳐서 화음이 됨) */
+const KEY = { rootHz: 110, scale: 'chord' };
+
+const CLAY_R = 1.2;   // 모듈 기준 크기 — 이 화면은 월드 단위 = 모듈 단위(배율 1)로 둠(젤리 크기 1.1~1.6이 기준과 비슷)
+const jellies = LAYOUT.map((L, i) => {
+  const material = makeJellyMaterial(i, L.mat);
+  const group = new THREE.Group(); scene.add(group);
+  const [hx, hy] = px2w(...L.px);
+  const home = new THREE.Vector3(hx, hy, L.z);
+  group.position.copy(home); group.rotation.set(...L.rot);
+  return { name: L.name, index: i, group, material, home, rotHome: group.rotation.clone(), voice: L.voice, note: L.note, sdf: L.sdf, grid: L.grid, clay: null };
+});
+window.__jellies = jellies; window.__cam = camera;
+
+/* =================================================================
+   ▼▼▼ sound-clay 붙이는 자리 (HOOK) — 04 물방울 화면과 같은 구조 ▼▼▼
+   ================================================================= */
+let FEEL = null;
+const FEEL_LS = 'soundclay.inkjelly.feel.v1';
+function attachSoundClay(j) {
+  j.clay = createSoundClay({
+    THREE, MarchingCubes, parent: j.group, camera, canvas: renderer.domElement,
+    material: j.material,                                // 원본 재질(우윳빛 판 / 잉크 조약돌)이 마칭큐브 표면에 그대로
+    base: SHAPES.custom(j.sdf),                          // 실제 모양: 강낭콩 판 + 렌즈 돔 / 달걀 조약돌 + 오목 렌즈
+    voice: j.voice, mute: MUTE, feel: FEEL,
+    rotateOnEmptyDrag: false,
+    exclusiveVoice: false,                               // 만진 젤리들은 계속 노래 — 멈추기는 '모두 멈춤'
+    key: KEY, note: j.note,
+    rules: { grid: { resolution: j.grid } },
+    onFeelChange: f => { saveFeel(f); feelPanel && feelPanel.refresh(); },
+  });
+  return j.clay;
+}
+function saveFeel(f) { try { localStorage.setItem(FEEL_LS, JSON.stringify(f)); } catch (_) {} }
+/* ▲▲▲ HOOK 끝 ▲▲▲ */
+
+const clays = () => jellies.filter(d => d.clay).map(d => d.clay);
+const activeJ = () => jellies.find(d => d.clay && d.clay.active) || null;
+const targetJ = () => activeJ() || jellies[1];
+
+/* ---------- 컨트롤(H 키로 표시) ---------- */
+let feelPanel = null;
+function buildUI() {
+  const ctl = document.getElementById('ctl');
+  const btn = (label, fn) => { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; ctl.appendChild(b); return b; };
+  const sel = document.createElement('select');
+  VOICES.forEach(v => { const op = document.createElement('option'); op.value = v; op.textContent = '목소리: ' + v; sel.appendChild(op); });
+  sel.onchange = () => { const d = targetJ(); d.clay.setVoice(sel.value); d.voice = sel.value; };
+  ctl.appendChild(sel);
+  const snd = btn('🔊 소리', () => { const d = targetJ(); d.clay.state.playing ? d.clay.stop() : d.clay.start(); });
+  btn('■ 모두 멈춤', () => clays().forEach(c => c.state.playing && c.stop()));
+  let listener = null;
+  const micB = btn('🎤 내 목소리', async () => {
+    if (listener && listener.clay.listening === 'MIC') { listener.clay.stopListening(); listener = null; }
+    else { stopAllListening(); listener = targetJ(); listener.clay.activate();
+      try { await listener.clay.listen('mic'); } catch (e) { alert('마이크를 못 열었어(내장 브라우저 창에선 막힘 → 크롬 localhost로): ' + e.message); listener = null; } }
+    showListen(); });
+  const fileB = btn('🎵 음성 파일', () => { if (listener && listener.clay.listening === 'FILE') { listener.clay.stopListening(); listener = null; showListen(); } else afile.click(); });
+  const afile = document.createElement('input'); afile.type = 'file'; afile.accept = 'audio/*'; afile.style.display = 'none'; document.body.appendChild(afile);
+  const playFile = async f => { stopAllListening(); listener = targetJ(); listener.clay.activate();
+    try { await listener.clay.listen(f); } catch (e) { alert('음성 파일을 못 읽었어: ' + e.message); listener = null; } showListen(); };
+  afile.onchange = () => { if (afile.files[0]) playFile(afile.files[0]); afile.value = ''; };
+  addEventListener('dragover', e => e.preventDefault());
+  addEventListener('drop', e => { e.preventDefault(); const f = [...e.dataTransfer.files].find(x => x.type.startsWith('audio/') || /\.(wav|mp3|m4a|ogg|flac|webm)$/i.test(x.name)); if (f) playFile(f); });
+  function stopAllListening() { clays().forEach(c => c.listening && c.stopListening()); listener = null; }
+  function showListen() { const l = listener && listener.clay.listening;
+    micB.textContent = l === 'MIC' ? '⏹ 목소리 끄기 (' + listener.name + ')' : '🎤 내 목소리';
+    fileB.textContent = l === 'FILE' ? '⏹ 파일 끄기 (' + listener.name + ')' : '🎵 음성 파일'; }
+  const feelB = btn('감각', () => document.getElementById('feel').classList.toggle('off'));
+  btn('↺ 이 젤리 초기화', () => targetJ().clay.reset());
+  feelPanel = buildFeelPanel(feelB);
+  return { sel, snd };
+}
+function buildFeelPanel(feelB) {
+  const fp = document.getElementById('feel');
+  fp.innerHTML = '<b style="font-size:12px">감각 프리셋 (젤리 전체)</b>';
+  const setAll = f => { clays().forEach(c => c.setFeel(f)); };
+  const cur = () => (jellies[0].clay).getFeel(nameIn.value || 'jelly');
+  const rows = {};
+  const nameIn = document.createElement('input'); nameIn.type = 'text'; nameIn.value = (FEEL && FEEL.name) || '기본';
+  fp.appendChild(nameIn);
+  FEEL_SCHEMA.forEach(f => {
+    const row = document.createElement('label'), top = document.createElement('div'), name = document.createElement('span'), t = document.createElement('span');
+    name.textContent = f.label; const r = document.createElement('input'); r.type = 'range'; r.min = f.min; r.max = f.max; r.step = f.step;
+    const d = Math.max(0, -Math.floor(Math.log10(f.step)));
+    r.oninput = () => { setAll({ values: { [f.key]: +r.value } }); t.textContent = (+r.value).toFixed(d); saveFeel(cur()); };
+    top.append(name, t); row.append(top, r); fp.appendChild(row); rows[f.key] = { r, t, d };
+  });
+  const bar = document.createElement('div'); bar.className = 'bar'; fp.appendChild(bar);
+  const mkB = (label, fn) => { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; bar.appendChild(b); };
+  const refresh = () => { const v = jellies[0].clay.getFeel().values; for (const k in rows) { rows[k].r.value = v[k]; rows[k].t.textContent = (+v[k]).toFixed(rows[k].d); } };
+  mkB('복사', async () => { const s = JSON.stringify(cur(), null, 2); try { await navigator.clipboard.writeText(s); feelB.textContent = '감각 ✓복사'; setTimeout(() => feelB.textContent = '감각', 1200); } catch (_) { alert(s); } });
+  mkB('파일로 저장', () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(cur(), null, 2)], { type: 'application/json' })); a.download = `sound-clay-feel_${nameIn.value || 'jelly'}.json`; a.click(); });
+  const fileIn = document.createElement('input'); fileIn.type = 'file'; fileIn.accept = '.json,application/json'; fileIn.style.display = 'none'; fp.appendChild(fileIn);
+  fileIn.onchange = async () => { const f = fileIn.files[0]; if (!f) return; try { const j = JSON.parse(await f.text()); setAll(j); if (j.name) nameIn.value = j.name; refresh(); saveFeel(cur()); } catch (e) { alert('프리셋을 읽지 못했어: ' + e.message); } fileIn.value = ''; };
+  mkB('불러오기', () => fileIn.click());
+  mkB('기본값', () => { const v = {}; FEEL_SCHEMA.forEach(f => v[f.key] = f.key === 'stiffness' ? RULES.pull.stiffness : f.key === 'spread' ? RULES.pull.spread : f.key.split('.').reduce((a, k) => a[k], RULES));
+    if (FEEL_DEFAULT) Object.assign(v, FEEL_DEFAULT.values); setAll({ values: v }); nameIn.value = '기본'; refresh(); saveFeel(cur()); });
+  refresh();
+  return { refresh };
+}
+
+/* ---------- HUD(H 키): 활성 젤리의 MIX RATIO · SHAPE → VOICE ---------- */
+const hudEl = document.getElementById('hud');
+hudEl.innerHTML = `<div id="hName" class="row" style="margin-top:0"></div>
+  <h4>MIX RATIO</h4><div id="hF0" class="sub"></div><div class="rule"></div>` +
+  WAVES.map((w, i) => `<div class="row"><span>${w}</span><span id="hp${i}"></span></div><div class="bar" id="hb${i}" style="width:0"></div><div class="track"></div>`).join('') +
+  `<h4>SHAPE → VOICE</h4><div class="rule"></div>` +
+  [['SIZE', 'PITCH'], ['STRETCH', 'GLIDE'], ['HORN', 'TRILL'], ['LEAN', 'VIBRATO'], ['FLAT', 'NOTE LEN'], ['VOLUME', 'RING']]
+    .map(([a, b], i) => `<div class="row"><span>${a}</span><span id="hs${i}"></span></div><div class="sub">→ ${b}</div>`).join('') +
+  `<div id="hTag" class="sub" style="margin-top:8px"></div>`;
+const $ = id => document.getElementById(id);
+function drawHud() {
+  const d = targetJ(); if (!d || !d.clay) return;
+  const c = d.clay, St = c.state, V = St.voice;
+  $('hName').innerHTML = `<span>${d.name.toUpperCase()} · ${c.voice.toUpperCase()}</span><span>${St.playing ? '♪' : (c.listening || '—')}</span>`;
+  $('hF0').textContent = St.f0 > 0 ? 'f0 ' + (St.f0 / 1000).toFixed(2) + ' kHz' : 'f0 — (no pitch)';
+  St.share.forEach((s, k) => { $('hp' + k).textContent = (s * 100).toFixed(s < 0.1 && s > 0 ? 1 : 0) + '%'; $('hb' + k).style.width = (100 * s).toFixed(1) + '%'; });
+  const v = [V.pitch, V.sweep, V.rate, V.vib, V.dur, V.ring];
+  v.forEach((x, i) => $('hs' + i).textContent = i === 3 ? '±' + x.toFixed(0) + 'Hz' : i === 5 ? (x * 100).toFixed(0) + '%' : '×' + x.toFixed(2));
+  $('hTag').textContent = St.tag + ' · undo ' + c.history.undo;
+  if (ui) { ui.sel.value = c.voice; ui.snd.textContent = St.playing ? '🔇 소리 끄기' : '🔊 소리'; }
+}
+let showHud = q.has('hud');
+const setHud = on => { showHud = on; ['hud', 'ctl', 'hint'].forEach(id => $(id).classList.toggle('off', !on)); if (!on) $('feel').classList.add('off'); };
+addEventListener('keydown', e => { if ((e.key === 'h' || e.key === 'H') && !e.ctrlKey && !e.metaKey && !e.altKey && e.target.tagName !== 'INPUT') setHud(!showHud); });
+
+/* ---------- 시작 ---------- */
+let FEEL_DEFAULT = null, ui = null;
+fit(); addEventListener('resize', fit);
+try { FEEL_DEFAULT = await (await fetch('./feel/기본.json')).json(); } catch (_) {}
+try { const s = localStorage.getItem(FEEL_LS); FEEL = s ? JSON.parse(s) : FEEL_DEFAULT; } catch (_) { FEEL = FEEL_DEFAULT; }
+jellies.forEach(attachSoundClay);
+ui = buildUI(); setHud(showHud && !REC);
+if (REC) $('hkey').classList.add('off');
+window.__clays = clays();
+
+/* ---------- 타임라인: 원본 8초를 params(t)로 ----------
+   0~8초: 판의 빛 분홍 → 마젠타 → 보라 / 조약돌 잉크 자주 덩어리(0~1.6) → 검보라(2.5) → 초록 얼룩(4~) → 더 퍼짐(6~8)
+   조약돌은 시계 방향으로 조금 돌며 위로 붙고, 판은 거의 그대로.
+   화면에서는 0→8→0 으로 천천히 오가고(16초 주기), 잉크 소용돌이는 계속 앞으로 흐름 */
+const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+const lerp3 = (a, b, t) => a.map((x, i) => x + (b[i] - x) * t);
+function params(t) {
+  const h = ss(0, 8, t);
+  const glow = h < 0.5 ? lerp3([0.84, 0.26, 0.46], [0.80, 0.27, 0.68], h / 0.5) : lerp3([0.80, 0.27, 0.68], [0.40, 0.27, 0.62], (h - 0.5) / 0.5);
+  const lens = h < 0.5 ? lerp3([0.90, 0.27, 0.55], [0.78, 0.30, 0.78], h / 0.5) : lerp3([0.78, 0.30, 0.78], [0.45, 0.32, 0.72], (h - 0.5) / 0.5);
+  const body = lerp3([0.86, 0.80, 0.81], [0.83, 0.79, 0.83], h);
+  const e = ss(0, 8, t);
+  return { glow, lens, body, inkP: ss(1.6, 4.6, t), inkQ: ss(3.5, 7.8, t),
+    pebRot: THREE.MathUtils.degToRad(-12 - 14 * e), pebDy: 0.30 * e, pebDx: 0.04 * e, slabRot: THREE.MathUtils.degToRad(2.5 * e) };
+}
+function applyParams(P, swirl) {
+  const [slab, peb] = jellies;
+  slab.material.uniforms.uGlowCol.value.set(...P.glow); slab.material.uniforms.uLensCol.value.set(...P.lens); slab.material.uniforms.uBody.value.set(...P.body);
+  slab.group.rotation.z = slab.rotHome.z + P.slabRot;
+  peb.group.rotation.z = P.pebRot; peb.group.position.set(peb.home.x + P.pebDx, peb.home.y + P.pebDy, peb.home.z);
+  const u = peb.material.uniforms; u.uInkP.value = P.inkP; u.uInkQ.value = P.inkQ; u.uSwirl.value = swirl;
+}
+
+let pressing = false;
+renderer.domElement.addEventListener('pointerdown', () => pressing = true);
+addEventListener('pointerup', () => pressing = false);
+let clock = 0, last = 0;
+function frame(t, tl = null) {
+  shared.uTime.value = t;
+  const dt = Math.min(0.1, t - last); last = t; if (!pressing) clock += dt;
+  const tt = tl != null ? tl : FIXED_T != null ? FIXED_T : 8 * (0.5 - 0.5 * Math.cos(Math.PI * clock / 8));
+  applyParams(params(tt), tl != null ? tl : FIXED_T != null ? FIXED_T : clock);
+  for (const j of jellies) {
+    j.group.updateMatrixWorld(true);
+    j.material.uniforms.uInv.value.copy(j.group.matrixWorld).invert();
+    if (j.clay) { j.clay.update(t); j.material.uniforms.uGrow.value = Math.cbrt(j.clay.state.shape.volume || 1); }
+  }
+  if (showHud) drawHud();
+  renderer.render(scene, camera);
+}
+window.__frame = frame; window.__params = params;
+
+if (REC) {
+  // 24fps × 8초 = 192장, 한 장씩 서버로
+  const list = q.get('rec') && q.get('rec') !== '1' ? q.get('rec').split(',').map(Number) : [...Array(192).keys()];   // ?rec=0,48,96 → 그 프레임만
+  for (const i of list) {
+    const t = i / 24; frame(t, t);
+    const blob = await new Promise(r => renderer.domElement.toBlob(r, 'image/png'));
+    await fetch('/frame/' + i, { method: 'POST', body: blob });
+  }
+  document.title = 'REC DONE';
+} else {
+  const loop = ms => { frame(ms / 1000); requestAnimationFrame(loop); };
+  requestAnimationFrame(loop);
+}
+</script>
+</body>
+</html>
