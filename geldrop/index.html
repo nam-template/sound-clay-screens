@@ -81,7 +81,7 @@ const shared = { uTime: { value: 0 }, uRes: { value: new THREE.Vector2(1, 1) } }
 function fit() {
   let w, h;
   if (REC) { w = VW; h = VH; renderer.setPixelRatio(1); }
-  else { h = Math.min(innerHeight, innerWidth / ASPECT); w = h * ASPECT; renderer.setPixelRatio(Math.min(2, devicePixelRatio)); }
+  else { h = Math.min(innerHeight, innerWidth / ASPECT); w = h * ASPECT; renderer.setPixelRatio(Math.min(2, devicePixelRatio) * Math.min(1, 884 / (h * Math.min(2, devicePixelRatio)))); }   // 3차 재질이 무거워서 내부 해상도는 원본 높이(884px)까지만
   renderer.setSize(Math.round(w), Math.round(h));
   stage.style.width = Math.round(w) + 'px'; stage.style.height = Math.round(h) + 'px';
   shared.uRes.value.set(Math.round(w) * renderer.getPixelRatio(), Math.round(h) * renderer.getPixelRatio());
@@ -117,126 +117,218 @@ const bgMesh = new THREE.Mesh(new THREE.BufferGeometry().setAttribute('position'
     fragmentShader: GLSL + 'void main(){ gl_FragColor = vec4(grain(bg(gl_FragCoord.xy / uRes)), 1.0); }' }));
 bgMesh.frustumCulled = false; bgMesh.renderOrder = -1; scene.add(bgMesh);
 
-/* ---------- 방울 재질 ----------
-   메시가 무엇이든(마칭큐브) position·normal만 있으면 동작. 색·기포·소용돌이는 '오브젝트 공간'(uInv)에서 계산 → 당겨도 따라감.
-   가운데는 밝고(바닥 면이 비침) 가장자리 띠는 짙음. 아래 가장자리 안쪽은 두꺼워서 빛이 모임(파랑 단계 하늘색 / 구리 단계 주황).
-   기포: 공·길쭉한 타원체를 굴절된 시선과 직접 교차해서 그림(테두리 어둡고 위왼쪽 반짝임) */
-const NB = 32;
+/* ---------- 방울 재질 (3차: 질감·형태) ----------
+   메시가 무엇이든(마칭큐브) position·normal만 있으면 동작. 색·기포·흐름은 '오브젝트 공간'(uInv)에서 계산 → 당겨도 따라감.
+   - 흐름은 선을 칠하지 않고 '높이장' H(x,y)로 만든다 → 그 기울기로 법선을 휘게 해서 굴절·반사·그림자가 실제로 휨(밝은 능선 · 어두운 골)
+   - 실루엣: 정점 셰이더가 가장자리를 흐름 시간에 따라 울퉁불퉁 흔들고, 오른쪽·위를 부풀렸다 꺼뜨림
+   - 색 분산: 굴절률을 R·G·B마다 다르게(1.33 / 1.38 / 1.44) 따로 굴절시켜 안쪽 무늬·배경을 채널별로 샘플 → 테두리·주름에 빨강·청록 띠
+   - 안쪽: 파랑 단계는 짙은 맑은 유리(굴절된 배경 + 위→아래 짙어짐), 구리 단계는 가운데도 구리빛 + 문질러진 줄 + 부유물
+   - 기포: 굴절된 시선과 타원체 교차(큰 것) + 칸마다 무작위 티끌·작은 기포·길쭉한 조각(셀 노이즈 두 겹) */
+const NB = 40;
 function makeDropMaterial(o) {
   const bub = [], bubS = [];
   for (let i = 0; i < NB; i++) { const b = o.bubbles[i] || [9, 9, 9, 0.001, 1, 0]; bub.push(new THREE.Vector4(b[0], b[1], b[2], b[3])); bubS.push(new THREE.Vector2(b[4], b[5])); }
   return new THREE.ShaderMaterial({
     uniforms: {
       ...shared,
-      uInv: { value: new THREE.Matrix4() }, uR: { value: o.R }, uIor: { value: 1.38 },
+      uInv: { value: new THREE.Matrix4() }, uGrp: { value: new THREE.Matrix4() }, uR: { value: o.R },
       uT: { value: 0 }, uPal: { value: PALETTE.map(c => new THREE.Vector3(...c.map(x => x / 255))) },   // 색은 자리마다 따로 바뀜(가장자리 먼저)
       uSwirlAmt: { value: 0 }, uSwirlT: { value: 0 }, uSwirlC: { value: new THREE.Vector2() }, uSwirlRad: { value: 0.2 },
       uDrip: { value: new THREE.Vector4() }, uDripW: { value: 0.04 }, uDripAmt: { value: 0 },
       uBlob: { value: new THREE.Vector4(9, 9, 0.01, 0) }, uRimFlow: { value: 0 },
+      uCrinkle: { value: 0 }, uRingAmt: { value: 0 }, uRingR: { value: 0.1 }, uWobble: { value: 0 }, uBulge: { value: new THREE.Vector2() }, uCuFold: { value: 0 }, uBubRot: { value: 0 },
       uBub: { value: bub }, uBubS: { value: bubS },
       uGrow: { value: 1 },   // 휠로 부피를 바꾸면 무늬(기포·띠)도 같이 커짐 = ∛부피
     },
     vertexShader: /* glsl */`
+      uniform mat4 uInv, uGrp; uniform float uR, uT, uWobble, uGrow; uniform vec2 uBulge;
       varying vec3 vW, vN;
+      float angd(float a, float b){ return abs(mod(a - b + 3.14159265, 6.2831853) - 3.14159265); }
       void main(){
         vec4 wp = modelMatrix * vec4(position, 1.);
+        vec3 g = (uInv * wp).xyz;                                   // 방울(그룹) 공간
+        vec2 p = g.xy / (uR * uGrow); float r = length(p), a = atan(p.y, p.x);
+        float edge = smoothstep(0.55, 1.0, r);
+        // 가장자리 울퉁불퉁(0~5초) + 오른쪽·위 부풂
+        float d = uWobble * (0.016*sin(3.0*a + uT*2.1) + 0.011*sin(5.0*a - uT*3.3 + 1.0) + 0.007*sin(8.0*a + uT*4.1 + 2.0) + 0.004*sin(13.0*a - uT*5.0));
+        d += uBulge.x * 0.075 * exp(-pow(angd(a, -0.15)/0.55, 2.0)) + uBulge.y * 0.06 * exp(-pow(angd(a, 1.45)/0.6, 2.0));
+        g.xy += (r > 1e-4 ? p / r : vec2(0.0)) * d * uR * uGrow * edge;
+        wp = uGrp * vec4(g, 1.);
         vW = wp.xyz; vN = normalize(mat3(modelMatrix) * normal);
         gl_Position = projectionMatrix * viewMatrix * wp;
       }`,
     fragmentShader: GLSL + /* glsl */`
       #define NB ${NB}
-      uniform mat4 uInv; uniform float uR, uIor, uSwirlAmt, uSwirlT, uSwirlRad, uGrow, uT, uDripW, uDripAmt, uRimFlow;
+      uniform mat4 uInv, uGrp; uniform float uR, uSwirlAmt, uSwirlT, uSwirlRad, uGrow, uT, uDripW, uDripAmt, uRimFlow, uCrinkle, uCuFold, uBubRot, uRingAmt, uRingR;
       uniform vec2 uSwirlC; uniform vec4 uDrip, uBlob;
       uniform vec3 uPal[12]; uniform vec4 uBub[NB]; uniform vec2 uBubS[NB];
-      vec3 cC, cD, cO, cHi;                                  // 이 픽셀의 색(가운데·띠·아래 두꺼운 곳·밝은 띠)
-      #define uC cC
-      #define uD cD
-      #define uO cO
-      #define uHi cHi
+      varying vec3 vW, vN;
+      vec3 cC, cD, cO, cHi; float hh;                         // 이 픽셀의 색(가운데·띠·아래 두꺼운 곳·밝은 띠), 구리 진행도
       vec3 pal3(float h, int k){ return h < 0.5 ? mix(uPal[k], uPal[4+k], h/0.5) : mix(uPal[4+k], uPal[8+k], (h-0.5)/0.5); }
       float sstep(float a, float b, float x){ float t = clamp((x-a)/(b-a), 0.0, 1.0); return t*t*(3.0-2.0*t); }
-      // 선분 거리(흐름 줄기용)
       vec2 segD(vec2 p, vec2 a, vec2 b){ vec2 pa = p - a, ba = b - a; float h = clamp(dot(pa, ba)/dot(ba, ba), 0.0, 1.0); return vec2(length(pa - ba*h), h); }
-      float vn2(vec2 x){ vec2 i = floor(x), f = fract(x); f = f*f*(3.0-2.0*f);
+      float vn2(vec2 x){ vec2 i = floor(x), f = fract(x); f = f*f*f*(f*(f*6.0-15.0)+10.0);   // 5차 보간: 굴곡(2차 미분)에 격자 무늬가 안 생김
         return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y); }
-      varying vec3 vW, vN;
-      // 반사로 보이는 스튜디오: 위쪽 큰 소프트박스(흰색), 아래는 배경 파랑
-      vec3 env(vec3 r){ float up = smoothstep(-0.2, 0.9, r.y*0.85 + r.x*0.25); return mix(vec3(0.30,0.40,0.70), vec3(1.0), up); }
+      float fbm2(vec2 x){ float s = 0.0, a = 0.5; for (int i = 0; i < 4; i++){ s += a*vn2(x); x = x*2.07 + 5.3; a *= 0.5; } return s; }
+      float fbmLo(vec2 x){ return 0.65*vn2(x) + 0.35*vn2(x*2.03 + 5.3); }          // 높이장용 2옥타브(굴곡이 잘게 튀지 않게)
       mat2 rot(float a){ float c = cos(a), s = sin(a); return mat2(c, -s, s, c); }
+      vec3 env(vec3 r){ float up = smoothstep(-0.2, 0.9, r.y*0.85 + r.x*0.25); return mix(vec3(0.30,0.40,0.70), vec3(1.0), up); }
+
+      /* 높이장(방울 반지름 단위). 흐름이 지나간 자리의 표면 굴곡 */
+      float H(vec2 q){
+        float h = 0.0, r0 = length(q), a0 = atan(q.y, q.x);
+        // 흐름 1) 소용돌이: 중심에서 반시계로 감긴 겹겹의 주름(능선·골). 반지름이 커지며 방울 전체를 덮음
+        vec2 s = q - uSwirlC; float rs = length(s), a = atan(s.y, s.x);
+        float w = fbmLo(s*2.2 + 3.7) - 0.5;                          // 각도 대신 좌표로 흔듦(중심 이음매 없음)
+        // 원본: 굵고 느슨한 굴곡 3~4겹이 방울 전체를 덮음(하얀 선이 아니라 유리가 휘어 생긴 밝고 어두운 띠) → 한 가지 사인, 낮은 주파수, 부드러운 단면
+        float ph = rs*19.0 - a - uSwirlT*2.4 + w*3.0;
+        float m = smoothstep(0.0, 0.15, rs) * smoothstep(uSwirlRad*1.3, uSwirlRad*0.6, rs) * smoothstep(1.04, 0.84, r0);
+        h += uSwirlAmt * m * (0.5 + 0.5*sin(ph)) * (0.030 + 0.022*vn2(s*2.0 + 1.3));
+        // 흐름 1 시작) 0~1.5초 왼쪽 가장자리의 유리 고리(작은 소용돌이 시작): 단면이 둥근 고리
+        { float tr = (rs - uRingR) / 0.04; h += uRingAmt * 0.045 * sqrt(max(0.0, 1.0 - tr*tr)); }
+        // 흐름 4) 오른쪽 가장자리 물결(시계 방향으로 흘러내림)
+        float band = smoothstep(0.50, 0.72, r0) * smoothstep(1.04, 0.92, r0);
+        h += uRimFlow * band * smoothstep(-0.4, 0.5, q.x) * sin(a0*10.0 + uT*2.4 + r0*14.0 + w*2.0) * 0.018;
+        // 구리 단계 아래 테두리의 물결치는 주름
+        h += uCuFold * band * smoothstep(0.2, -0.7, q.y) * sin(a0*13.0 + r0*24.0 + fbmLo(q*3.0)*5.0 + uT*0.5) * 0.009;
+        // 흐름 동안 표면 전체가 구겨짐
+        h += uCrinkle * (fbmLo(q*2.6 + vec2(uT*0.35, -uT*0.2)) - 0.5) * 0.022;
+        // 흐름 2) 세로 물길: 볼록한 유리 관(아래 끝이 굵음)
+        // 원본: 아래 끝이 둥근 맑은 물방울 모양의 관 → 가는 관(단면 둥근 돔) + 아래 끝 둥근 방울
+        vec2 sg = segD(q, uDrip.xy, uDrip.zw);
+        float dt = sg.x / (uDripW*(0.30 + 0.95*sg.y*sg.y)), db = length(q - (uDrip.zw + (uDrip.zw - uDrip.xy)*0.04)) / (uDripW*1.25);   // 위로 가늘어지는 눈물방울
+        float tear = max(sqrt(max(0.0, 1.0 - dt*dt)) * (0.55 + 0.45*sg.y), sqrt(max(0.0, 1.0 - db*db)));
+        h += uDripAmt * 0.05 * tear;
+        // 흐름 6) 물감 덩어리 혹
+        vec2 bq = (q - uBlob.xy) / uBlob.z;
+        h += uBlob.w * 0.035 * exp(-dot(bq, bq)*1.5);
+        return h;
+      }
+
+      /* 안쪽 무늬(굴절된 자리 Q에서 본 색) — 채널마다 다른 Q로 불러서 색 분산을 만듦 */
+      vec3 inner(vec2 Q, vec2 P2, vec2 uvs){
+        float rr = length(Q), r0 = length(P2);
+        float lowerR = smoothstep(0.25, -0.75, P2.y), upperR = smoothstep(-0.1, 0.8, P2.y) * smoothstep(0.7, -0.3, P2.x);
+        // 원판: 짙은 맑은 유리. 위왼쪽이 밝고 아래로 짙어짐 + 굴절된 배경이 비침
+        vec3 disc = mix(cC * 1.10, cC * mix(0.80, 0.85, hh), smoothstep(-0.7, 0.75, -Q.y*0.8 + Q.x*0.3));
+        disc = mix(disc, bg(uvs) * (cC*1.25 + 0.05), mix(0.16, 0.0, hh));
+        // 구리 단계: 가운데도 구리빛 + 문질러진 줄
+        disc = mix(disc, disc*0.70 + cO*0.50, hh * 0.55 * smoothstep(0.6, -0.8, Q.y + 0.3*Q.x));   // 구리 단계: 가운데도 복숭아·구리빛(아래쪽이 더 진함)
+        float smear = fbm2(rot(0.55)*Q*vec2(2.5, 22.0) + 1.7);
+        disc *= 1.0 + hh * 0.30 * (smear - 0.5);
+        // 바깥 유리 띠: 짙은 색 + 아래 가운데 두꺼운 곳은 빛이 모임(얇게)
+        float lowC = smoothstep(-0.55, -0.92, P2.y) * smoothstep(0.75, 0.2, abs(P2.x + 0.15));
+        vec2 dir = P2 / max(r0, 1e-4);
+        float irr = fbmLo(dir*1.8 + 3.1), irr2 = fbmLo(dir*4.0 + vec2(uT*0.05, 7.0));   // 방향마다 다른 값(각도 이음매 없음)
+        vec3 ring = mix(cD * mix(1.0, 0.75, hh), cO * 1.15, clamp(lowC * (1.0 + 0.6*hh), 0.0, 1.0));   // 구리 단계: 왼아래 짙은 갈색 · 아래 주황
+        ring *= 0.6 + 0.9*irr2;                                                              // 띠 밝기 불규칙
+        ring = mix(ring, cHi, clamp(upperR*(0.28 + 0.35*hh) * (0.5 + irr2), 0.0, 1.0)) * 0.85;   // 위왼쪽 밝은 반사(구리 단계에 더 셈)
+        float rb = mix(r0, rr, 0.6);
+        float band = smoothstep(0.64, 0.76, rb + 0.10*(irr - 0.5));                          // 띠 두께 불규칙
+        vec3 col = mix(disc, ring, band);
+        // 아래 가장자리: 원판 끝의 짙은 초승달 → 바깥의 맑고 두꺼운 유리 입술(배경이 비쳐 옅음). 채널마다 rr이 달라 경계에 빨강·청록 띠가 생김
+        float low = smoothstep(0.20, -0.45, P2.y);
+        col = mix(col, cD * 0.45, exp(-pow((rb - 0.785)/0.028, 2.0)) * low * 0.95);
+        vec3 lip = mix(bg(uvs) * 1.04 + 0.03, cO * 1.25, hh * 0.65);
+        col = mix(col, lip, smoothstep(0.805, 0.835, rb) * low * 0.85);
+        col += mix(cHi, cO, lowerR) * 0.22 * (0.3 + 1.2*irr2) * exp(-pow((r0 - 0.95)/0.025, 2.0));
+        return col;
+      }
+
+      /* 셀마다 무작위 티끌·작은 기포·길쭉한 조각 */
+      vec3 specks(vec2 q, vec3 col, float sc, float dens, float rmax, float seed){
+        vec2 g = q*sc, id = floor(g), f = fract(g);
+        float hs = hash(id + seed);
+        if (hs > dens) return col;
+        vec2 c = vec2(hash(id + seed + 1.1), hash(id + seed + 2.2))*0.6 + 0.2;
+        float el = 1.0 + 3.5*step(0.72, hash(id + seed + 4.4))*hash(id + seed + 5.5);
+        vec2 d = rot(hash(id + seed + 3.3)*6.28) * (f - c); d.x /= el;
+        float rad = rmax * (0.2 + 0.8*pow(hash(id + seed + 6.6), 2.0));
+        float qq = length(d) / rad;
+        if (qq > 1.0) return col;
+        vec2 w = d / rad;
+        float edge = smoothstep(0.45, 0.95, qq);
+        vec3 bc = mix(col*1.12 + 0.03, col*0.55, edge);
+        bc += vec3(0.5) * exp(-dot(w - vec2(-0.3, 0.35), w - vec2(-0.3, 0.35)) / 0.05);
+        return mix(col, bc, smoothstep(1.0, 0.85, qq));
+      }
+
       void main(){
-        vec3 n = normalize(vN);
+        vec3 nw = normalize(vN);
         vec3 v = normalize(vW - cameraPosition);
-        if (dot(n, v) > 0.0) n = -n;
-        float ndv = clamp(-dot(n, v), 0.0, 1.0);
-        vec3 pL = (uInv * vec4(vW, 1.)).xyz / uGrow, nL = normalize(mat3(uInv) * n), vL = normalize(mat3(uInv) * v);
-        vec3 rd = refract(vL, nL, 1.0/uIor);
-        vec3 rf = reflect(v, n);
-        float fres = 0.025 + 0.975*pow(1.0 - ndv, 5.0);
-        vec3 P = pL / uR;                                   // 방울 반지름 = 1
+        if (dot(nw, v) > 0.0) nw = -nw;
+        vec3 pL = (uInv * vec4(vW, 1.)).xyz / uGrow, nL = normalize(mat3(uInv) * nw), vL = normalize(mat3(uInv) * v);
+        vec3 P = pL / uR;
         // 흐름 7) 색 바뀜: 바깥 띠와 오른쪽 아래가 먼저(최대 약 1초 빨리), 가운데가 마지막
         float lead = 0.9*sstep(0.4, 0.95, length(P.xy)) + 0.4*sstep(0.0, 0.8, P.x - P.y);
-        float hh = sstep(3.0, 6.6, uT + lead);
+        hh = sstep(3.0, 6.6, uT + lead);
         cC = pal3(hh, 0); cD = pal3(hh, 1); cO = pal3(hh, 2); cHi = pal3(hh, 3);
 
-        // 1) 몸통: 가운데 밝은 원판(바닥 면이 비침, 굴절로 밀림) + 바깥 두꺼운 유리 띠(짙은 색 + 안쪽 반사 줄)
-        vec2 Q = P.xy + rd.xy * 0.30;
-        float rr = length(Q), r0 = length(P.xy), a0 = atan(P.y, P.x);
-        vec3 disc = mix(uC * 1.04, uC * 0.92, smoothstep(0.1, 0.72, rr));
-        float lowerR = smoothstep(0.25, -0.75, P.y), upperR = smoothstep(-0.1, 0.8, P.y) * smoothstep(0.7, -0.3, P.x);
-        float lowC = smoothstep(-0.35, -0.85, P.y) * smoothstep(0.75, 0.2, abs(P.x + 0.15));   // 아래 가운데 두꺼운 곳에만 빛이 모임
-        vec3 ring = mix(uD, uO, lowC * 0.8);
-        float streak = pow(0.5 + 0.5*sin(a0*7.0 + r0*26.0 + uT*0.25), 8.0) * 0.6 + pow(0.5 + 0.5*sin(a0*3.0 - r0*40.0), 14.0) * 0.5;
-        ring = mix(ring, uHi, clamp(upperR*0.30 + streak*0.22, 0.0, 1.0));
-        float band = smoothstep(0.60, 0.72, mix(r0, rr, 0.5));
-        ring *= 0.85;
-        vec3 col = mix(disc, ring, band);
-        col += uHi * 0.30 * exp(-pow((rr - 0.715)/0.018, 2.0)) * (0.4 + upperR);          // 원판 테두리의 밝은 선
-        col += mix(uHi, uO, lowerR) * 0.35 * exp(-pow((r0 - 0.95)/0.025, 2.0));            // 바깥 끝 밝은 선
-        // 굴절된 배경이 조금 비침
-        vec3 rdW = refract(v, n, 1.0/uIor);
-        vec2 uv = gl_FragCoord.xy / uRes + rdW.xy * vec2(0.10, 0.10*${ASPECT.toFixed(4)}) * (1.0 - ndv);
-        col = mix(col, bg(uv) * (uC*1.1 + 0.15), 0.12);
+        // 높이장 기울기로 법선을 휨(앞면 기준)
+        float e = 0.006;
+        float hx1 = H(P.xy + vec2(e, 0.0)), hx0 = H(P.xy - vec2(e, 0.0)), hy1 = H(P.xy + vec2(0.0, e)), hy0 = H(P.xy - vec2(0.0, e)), hc = H(P.xy);
+        vec2 gH = vec2(hx1 - hx0, hy1 - hy0) / (2.0*e);
+        float lap = (hx1 + hx0 + hy1 + hy0 - 4.0*hc) / (e*e);                       // 굴곡(능선 < 0 < 골)
+        vec3 nP = normalize(nL + vec3(-gH * max(abs(nL.z), 0.25), 0.0));
+        vec3 n = normalize(mat3(uGrp) * nP);
+        float ndv = clamp(-dot(n, v), 0.0, 1.0);
+        vec3 rf = reflect(v, n);
+        float fres = (0.025 + 0.975*pow(1.0 - ndv, 5.0)) * 0.5;
 
-        // 흐름 1) 왼쪽 소용돌이(0.25~4.5초): 왼쪽 가장자리에서 작은 고리로 생겨, 커지며 가운데 쪽으로 옮겨 와 방울 전체로 퍼짐. 반시계로 감김
-        vec2 Qs = Q - uSwirlC;
-        float rs = length(Qs), a = atan(Qs.y, Qs.x);
-        // 원본은 깨끗한 나선이 아니라 젤리가 접힌 유리 주름: 굵기·간격이 흔들리고 군데군데 끊긴 호. 밝은 줄 옆에 어두운 그림자 줄이 붙음
-        float wob = vn2(vec2(a*1.2, rs*3.0) + 3.7) - 0.5;
-        float ph = rs*20.0/max(uSwirlRad, 0.3) * 0.5 - a*1.0 - uSwirlT*3.0 + wob*1.2;   // 고리 2~3겹(반지름이 커지면 간격도 넓어짐)
-        float gate = smoothstep(0.15, 0.45, vn2(vec2(a*1.3 + uSwirlT*0.3, rs*1.5)));
-        float sw = smoothstep(0.02, 0.10, rs) * smoothstep(uSwirlRad*1.15, uSwirlRad*0.7, rs) * smoothstep(0.98, 0.80, rr) * uSwirlAmt * gate;
-        float s1 = pow(0.5 + 0.5*sin(ph), 16.0), s2 = pow(0.5 + 0.5*sin(ph - 0.9), 6.0);
-        col = col * (1.0 - 0.42*s2*sw) + uHi * 0.40 * s1 * sw;
+        // 색 분산: R·G·B 굴절률을 따로
+        vec3 rdR = refract(vL, nP, 1.0/1.30), rdG = refract(vL, nP, 1.0/1.38), rdB = refract(vL, nP, 1.0/1.48);
+        vec2 uv0 = gl_FragCoord.xy / uRes, ak = vec2(0.16, 0.16*${ASPECT.toFixed(4)});
+        vec3 wR = mat3(uGrp)*rdR, wG = mat3(uGrp)*rdG, wB = mat3(uGrp)*rdB;
+        vec3 col;
+        vec2 bend = -gH * 0.07;                                                        // 굴곡 경사만큼 안쪽 무늬가 휘어 보임(유리 굴절)
+        col.r = inner(P.xy + rdR.xy*0.305 + bend*0.9, P.xy, uv0 + wR.xy*ak*0.9).r;                // 채널마다 굴절 거리도 벌려서 분산을 잘 보이게
+        col.g = inner(P.xy + rdG.xy*0.34 + bend, P.xy, uv0 + wG.xy*ak).g;
+        col.b = inner(P.xy + rdB.xy*0.375 + bend*1.1, P.xy, uv0 + wB.xy*ak*1.1).b;
+        vec2 Q = P.xy + rdG.xy*0.34;
 
-        // 흐름 2) 위오른쪽 세로 물길(0~3.4초): 위 가장자리에서 아래로 늘어진 유리 관. 시계 방향으로 오른쪽 가장자리로 쓸려 가며 짧아짐
-        { vec2 sg = segD(Q, uDrip.xy, uDrip.zw);
-          float dd = sg.x / (uDripW * (0.55 + 0.9*sg.y));                               // 아래 끝이 매달린 방울처럼 굵어짐
-          float m = smoothstep(1.0, 0.85, dd) * uDripAmt;
-          vec3 tube = mix(col*1.22 + 0.06, col*0.40, smoothstep(0.45, 0.95, dd));      // 안 밝고 테두리 어두움
-          tube += vec3(0.6) * exp(-pow((dd - 0.25)/0.12, 2.0)) * 0.6;                   // 관 안 반짝 줄
-          col = mix(col, tube, m); }
+        // 주름 그림자: 휜 법선으로 받은 빛(능선 밝게, 골 어둡게)
+        vec3 Ld = normalize(vec3(-0.35, 0.65, 0.68));
+        float sh = dot(normalize(vec3(-gH*0.9, 1.0)), Ld) - dot(vec3(0.0, 0.0, 1.0), Ld);
+        col *= 1.0 + 0.85*sh;                                                         // 굴곡 경사에 따른 밝고 어두운 띠
+        // 능선은 빛이 모여 밝은 선, 골은 어두운 선(높이장의 굽은 정도에서 나옴)
+        float ridge = smoothstep(0.35, 1.0, -lap/26.0), trough = clamp(lap/26.0, 0.0, 1.0);   // 능선은 꼭대기만 가늘게
+        col = col*(1.0 - 0.40*trough) + mix(vec3(1.0), cHi, 0.35) * 0.30 * ridge;
 
-        // 흐름 4) 오른쪽 가장자리 물결(2~5.5초): 띠 안에서 줄무늬가 시계 방향으로 흘러내림
-        { float rw = pow(0.5 + 0.5*sin(a0*9.0 + uT*2.4 + r0*18.0), 10.0) * band * sstep(-0.3, 0.6, P.x) * uRimFlow;
-          col = col*(1.0 - 0.25*rw) + uHi * 0.35 * pow(0.5 + 0.5*sin(a0*9.0 + uT*2.4 + r0*18.0 + 0.8), 16.0) * band * sstep(-0.3, 0.6, P.x) * uRimFlow; }
-
-        // 흐름 6) 주황 물감 덩어리(4.4~7.5초): 오른쪽 아래 가장자리에서 생겨 오른쪽 가장자리를 타고 올라간 뒤 안으로 들어오며 풀림
-        { vec2 bq = (Q - uBlob.xy) / uBlob.z; bq.x *= 0.85;
-          float bd = length(bq + 0.12*vec2(sin(bq.y*3.0 + uT*2.0), cos(bq.x*3.0 - uT*1.7)));
-          float m = smoothstep(1.0, 0.8, bd) * uBlob.w;
-          vec3 oc = mix(vec3(0.93, 0.60, 0.34), vec3(0.55, 0.22, 0.08), smoothstep(0.3, 0.95, bd));
-          oc += vec3(0.9, 0.85, 0.8) * exp(-dot(bq - vec2(-0.3, 0.35), bq - vec2(-0.3, 0.35)) / 0.03);
+        // 흐름 6) 주황 물감 덩어리(색): 오른쪽 아래 가장자리에서 생겨 가장자리를 타고 올라간 뒤 안으로 들어오며 풀림
+        // 원본: 광택 있는 입체 방울이 가장자리에 붙어 늘어짐 → 가장자리 방향으로 늘인 타원 + 구면 법선으로 음영·반사광·테두리 굴절
+        { vec2 rdir = normalize(uBlob.xy + 1e-4), tdir = vec2(-rdir.y, rdir.x);
+          vec2 bq = (Q - uBlob.xy) / uBlob.z; bq = vec2(dot(bq, tdir)/1.45, dot(bq, rdir));
+          bq += 0.10*vec2(sin(bq.y*3.0 + uT*2.0), cos(bq.x*3.0 - uT*1.7));
+          float bd = length(bq), m = smoothstep(1.0, 0.9, bd) * uBlob.w;
+          vec3 nb = normalize(vec3(bq*1.1, sqrt(max(0.03, 1.0 - bd*bd))));
+          vec3 Lb = normalize(vec3(-0.4, 0.6, 0.7));
+          vec3 oc = mix(vec3(0.86, 0.46, 0.18), vec3(0.42, 0.14, 0.04), smoothstep(0.25, 1.0, bd));
+          oc *= 0.55 + 0.65*max(dot(nb, Lb), 0.0);
+          oc += vec3(1.0, 0.92, 0.82) * pow(max(dot(reflect(vec3(0.0, 0.0, -1.0), nb), Lb), 0.0), 30.0) * 0.9;
+          oc = mix(oc, col*0.5 + vec3(0.25, 0.08, 0.02), smoothstep(0.78, 1.0, bd)*0.6);
           col = mix(col, oc, m); }
 
-        // 3) 기포: 굴절된 시선(pL → rd)과 타원체 교차
-        // (흐름 3·5와 바탕 기포의 회전은 JS에서 기포 위치를 매 프레임 옮겨서 넣음)
-        vec3 o = P; vec3 d = normalize(rd);
+        // 티끌·작은 기포·길쭉한 조각(불규칙, 흐름 따라 조금 돎)
+        vec2 Qr = rot(uBubRot) * Q;
+        float inside = smoothstep(0.92, 0.80, length(Q));
+        vec3 c0 = col;
+        col = specks(Qr, col, 17.0, 0.16, 0.22, 3.1);
+        col = specks(Qr + 0.37, col, 31.0, 0.20, 0.20, 7.7);
+        col = specks(Qr - 0.21, col, 58.0, 0.16, 0.16, 11.3);
+        col = mix(c0, col, inside);
+        // 구리 단계 부유물(짙은 알갱이)
+        { vec2 g = Qr*44.0 + 9.1, id = floor(g); float hs = hash(id + 21.0);
+          float dd = length(fract(g) - (vec2(hash(id+22.0), hash(id+23.0))*0.6 + 0.2));
+          col = mix(col, col*0.55 + cO*0.15, hh * inside * step(hs, 0.22) * smoothstep(0.12, 0.05, dd)); }
+
+        // 큰 기포: 굴절된 시선(pL → rd)과 타원체 교차
+        vec3 o3 = P, d3 = normalize(rdG);
         for (int i = 0; i < NB; i++){
           vec4 B = uBub[i]; vec2 S = uBubS[i];
-          vec3 lo = o - B.xyz, ld = d;
+          vec3 lo = o3 - B.xyz, ld = d3;
           lo.xy = rot(-S.y) * lo.xy; ld.xy = rot(-S.y) * ld.xy;
           lo.x /= S.x; ld.x /= S.x;
-          float L = length(ld); ld /= L;
+          ld /= length(ld);
           float tc = -dot(lo, ld);
           if (tc < 0.0) continue;
           vec3 cp = lo + ld * tc;
@@ -244,24 +336,30 @@ function makeDropMaterial(o) {
           if (qq >= 1.0) continue;
           vec2 w = cp.xy / B.w;
           float edge = smoothstep(0.55, 0.92, qq) * (1.0 - smoothstep(0.93, 1.0, qq));
-          vec3 bc = mix(col * 1.18 + 0.05, col * 0.38, edge);                         // 안은 밝고 테두리는 어둡게
-          bc += vec3(0.85) * exp(-dot(w - vec2(-0.32, 0.38), w - vec2(-0.32, 0.38)) / 0.035);   // 위왼쪽 반짝임
-          bc += vec3(0.35) * exp(-pow((qq - 0.80)/0.06, 2.0)) * smoothstep(0.2, -0.6, w.y);    // 아래쪽 안 밝은 테
+          vec3 bc = mix(col * 1.18 + 0.05, col * 0.36, edge);
+          if (i == NB - 1) {                                                               // 위 공기주머니: 밝은 테두리가 진한 납작 기포
+            bc = mix(col * 1.30 + 0.10, col * 0.50, smoothstep(0.30, 0.80, qq));
+            bc += vec3(0.95) * exp(-pow((qq - 0.92)/0.035, 2.0)) + vec3(0.6) * exp(-pow((qq - 0.55)/0.05, 2.0)) * smoothstep(0.0, 0.6, w.y);
+          }
+          bc += vec3(0.85) * exp(-dot(w - vec2(-0.32, 0.38), w - vec2(-0.32, 0.38)) / 0.035);
+          bc += vec3(0.35) * exp(-pow((qq - 0.80)/0.06, 2.0)) * smoothstep(0.2, -0.6, w.y);
+          bc.r += 0.10 * exp(-pow((qq - 0.97)/0.03, 2.0)); bc.b += 0.10 * exp(-pow((qq - 0.90)/0.03, 2.0));   // 기포 테 분산
           col = mix(col, bc, smoothstep(1.0, 0.94, qq));
         }
 
-        // 4) 가장자리: 어둡게 + 무지개 테두리(빨강·하늘색 띠)
-        col *= mix(0.62, 1.0, smoothstep(0.0, 0.32, ndv));
-        col = mix(col, uD * 0.75, (1.0 - smoothstep(0.04, 0.28, ndv)) * 0.45);
-        col += vec3(0.55, 0.10, 0.22) * exp(-pow((ndv - 0.10)/0.035, 2.0));
-        col += vec3(0.12, 0.45, 0.60) * exp(-pow((ndv - 0.18)/0.040, 2.0));
+        // 가장자리: 어둡게 + 진한 무지개 테(빨강 바깥·청록 안쪽)
+        col *= mix(0.62, 1.0, smoothstep(0.0, 0.30, ndv));
+        col = mix(col, cD * 0.75, (1.0 - smoothstep(0.04, 0.26, ndv)) * 0.4);
+        col += vec3(0.95, 0.10, 0.30) * exp(-pow((ndv - 0.09)/0.04, 2.0));
+        col += vec3(0.00, 0.60, 0.70) * exp(-pow((ndv - 0.19)/0.045, 2.0));
 
-        // 5) 반사 · 하이라이트
-        fres *= 0.45;
+        // 반사 · 하이라이트(휜 법선이라 주름 능선마다 반짝임)
         col = col*(1.0 - fres) + env(rf)*fres;
+        // 위쪽 가장자리를 따라 이어지는 밝은 하이라이트 호(위 소프트박스가 비친 것)
+        col += vec3(1.0) * 0.80 * smoothstep(0.58, 0.16, ndv) * smoothstep(0.15, 0.75, n.y - 0.35*n.x) * (0.55 + 0.7*vn2(P.xy*5.0 + 2.0));
         vec3 L1 = normalize(vec3(-0.25, 0.80, 0.55)), L2 = normalize(vec3(0.55, 0.55, 0.62));
-        float h1 = pow(max(dot(rf, L1), 0.0), 900.0), h2 = pow(max(dot(rf, L2), 0.0), 1400.0);
-        col += vec3(1.0) * (h1*0.55 + h2*0.45);
+        float h1 = pow(max(dot(rf, L1), 0.0), 500.0), h2 = pow(max(dot(rf, L2), 0.0), 900.0);
+        col += vec3(1.0) * (h1*0.6 + h2*0.5);
         gl_FragColor = vec4(grain(col), 1.0);
       }`,
   });
@@ -284,26 +382,34 @@ function dropSDF(R) {
 
 /* ---------- 오브젝트(원본 픽셀에서 잰 배치) ----------
    방울 중심 (362, 443)px, 반지름 약 220px. 화면을 향해 위가 조금 뒤로 기울어 아래 두께가 보임 */
-const R = 220 * PX;
+const R = 230 * PX;   // 3차: 기울기를 줄여 원형에 가까워진 만큼 원본 크기(약 435×445px)에 맞춤
 // 기포 [x, y, z, r, 길쭉함, 각도] — 방울 반지름 1 기준(원본 9초 프레임에서 눈대중)
 const BUBBLES = [
   [-0.05, 0.12, 0.05, 0.055, 1, 0], [0.12, 0.01, 0.05, 0.045, 1, 0], [-0.12, -0.05, 0.05, 0.035, 1, 0], [0.18, -0.17, 0.05, 0.065, 1.1, 0.4],
   [-0.40, -0.40, 0.0, 0.07, 1.9, 0.9], [0.40, -0.42, 0.0, 0.06, 1.9, 0.5], [-0.12, 0.42, 0.0, 0.05, 2.2, 0.35], [-0.05, 0.72, -0.05, 0.06, 1.3, 0.2],
   [0.42, 0.30, 0.02, 0.02, 2.5, 1.2], [-0.30, 0.28, 0.02, 0.015, 1, 0],
 ];
-{ // 작은 점 기포(고정 시드)
+{ // 나머지 기포: 크기는 작은 게 훨씬 많게(거듭제곱), 모양은 공·길쭉한 조각·찌그러진 것 섞어서, 자리는 뭉치거나 흩어지게(고정 시드)
   let s = 7; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
-  while (BUBBLES.length < NB - 2) { const r = 0.62 * Math.sqrt(rnd()), a = rnd() * 6.283; BUBBLES.push([r * Math.cos(a), r * Math.sin(a), -0.1 + 0.2 * rnd(), 0.008 + 0.014 * rnd(), rnd() < 0.3 ? 2.2 : 1, rnd() * 3]); }
+  const clusters = [[-0.1, 0.05], [0.25, 0.3], [-0.35, -0.2], [0.3, -0.35], [-0.45, 0.4]];
+  while (BUBBLES.length < NB - 2) {
+    const c = clusters[Math.floor(rnd() * clusters.length)], near = rnd() < 0.6;
+    const r = near ? 0.22 * Math.sqrt(rnd()) : 0.78 * Math.sqrt(rnd()), a = rnd() * 6.283;
+    const x = (near ? c[0] : 0) + r * Math.cos(a), y = (near ? c[1] : 0) + r * Math.sin(a);
+    if (Math.hypot(x, y) > 0.8) continue;
+    const size = 0.005 + 0.032 * Math.pow(rnd(), 3), kind = rnd();
+    BUBBLES.push([x, y, -0.12 + 0.24 * rnd(), size, kind < 0.12 ? 2.2 + 2 * rnd() : kind < 0.45 ? 1.2 + 0.5 * rnd() : 1, rnd() * 3.14]);
+  }
 }
 // 마지막 두 칸(30·31)은 움직이는 기포 자리: 흐름 3(오른쪽 아래 길쭉한 기포) · 흐름 5(위 가장자리 큰 공기주머니)
 // 색: [가운데, 바깥 띠, 아래 두꺼운 곳, 밝은 띠] × [파랑, 라벤더, 구리]
 const PALETTE = [
   [100, 146, 218], [8, 60, 158], [70, 160, 238], [196, 232, 252],
   [140, 136, 184], [50, 48, 108], [150, 120, 190], [214, 200, 236],
-  [170, 132, 134], [104, 32, 12], [168, 82, 36], [236, 190, 172],
+  [182, 132, 114], [104, 32, 12], [168, 82, 36], [240, 196, 170],
 ];
 const LAYOUT = [
-  { name: 'drop', px: [362, 443], z: 0, rot: [-0.42, 0.10, 0.0], voice: 'toy', note: 220.00,   // A3
+  { name: 'drop', px: [362, 443], z: 0, rot: [-0.20, 0.06, 0.0], voice: 'toy', note: 220.00,   // A3
     sdf: dropSDF(R), grid: 76, mat: { R, bubbles: BUBBLES } },
 ];
 /* 화음 모드(sound-clay 5-1절): 04·05와 같은 키(A 장화음 A·C#·E). 방울 하나가 A3을 맡음(toy가 2~3음을 흩어 쳐서 화음이 됨) */
@@ -459,7 +565,7 @@ const kf = (K, t) => {
   for (let i = 1; i < K.length; i++) if (t <= K[i][0]) { const a = K[i - 1], b = K[i], u = ss(a[0], b[0], t); return a.slice(1).map((x, j) => x + (b[j + 1] - x) * u); }
   return K[K.length - 1].slice(1);
 };
-const K_SWIRL = [[0.25, -0.84, 0.10, 0.18], [1.0, -0.69, 0.18, 0.30], [1.5, -0.47, 0.0, 0.45], [2.5, -0.30, 0.05, 0.75], [3.5, -0.15, 0.0, 0.95]];   // 중심 x,y, 반지름
+const K_SWIRL = [[0.25, -0.80, 0.08, 0.18], [1.0, -0.62, 0.16, 0.35], [1.5, -0.45, 0.10, 0.55], [2.5, -0.25, 0.12, 0.95], [3.5, -0.12, 0.14, 1.20]];   // 3차2: 중심은 가운데에서 왼쪽 위, 크게 퍼짐   // 중심 x,y, 반지름
 const K_DRIP = [[0, 0.25, 0.82, 0.22, 0.12, 0.075], [1.0, 0.27, 0.80, 0.20, 0.30, 0.07], [2.0, 0.50, 0.72, 0.45, 0.45, 0.06], [3.0, 0.75, 0.55, 0.70, 0.40, 0.04]];   // 위 끝 x,y, 아래 끝 x,y, 굵기
 const K_LONG = [[0, 0.33, -0.18, 0.07, 1.6, -0.3], [1.0, 0.48, -0.24, 0.07, 2.2, -0.4], [2.0, 0.65, -0.30, 0.06, 2.5, -0.5], [2.75, 0.85, -0.22, 0.001, 2.5, -0.3]];   // x,y,r,길쭉함,각도
 // 공기주머니·물감 y는 방울이 기울어 화면에서 눌려 보이는 만큼 안쪽으로 당겨 둠(원본 화면 위치에 맞춤)
@@ -469,12 +575,17 @@ function params(t) {
   const e = ss(0, DUR, t);
   return {
     t,
-    swirl: kf(K_SWIRL, t), swirlAmt: ss(0.1, 0.6, t) * (1 - ss(3.4, 4.6, t)),
+    swirl: kf(K_SWIRL, t), swirlAmt: ss(0.5, 1.2, t) * (1 - ss(4.2, 6.2, t)),                              // 색이 바뀌는 동안(4~5.5초)에도 주름이 남음
+    ringAmt: ss(0.0, 0.15, t) * (1 - ss(1.0, 1.8, t)), ringR: 0.10 + 0.12 * ss(0.0, 1.5, t),   // 흐름 1 시작: 왼쪽 가장자리 유리 고리
     drip: kf(K_DRIP, t), dripAmt: t < 3.4 ? 1 - ss(2.6, 3.4, t) : 0,
     long: kf(K_LONG, t), pocket: kf(K_POCKET, t), blob: kf(K_BLOB, t),
     rimFlow: ss(1.8, 2.5, t) * (1 - ss(4.8, 5.8, t)),
+    crinkle: ss(0.0, 0.5, t) * (1 - ss(4.5, 5.8, t)) * 0.9 + 0.15,                  // 흐름 동안 표면 구겨짐(그 뒤에도 조금 남음)
+    wobble: ss(0.0, 0.4, t) * (1 - 0.6 * ss(4.6, 5.6, t)),                         // 구리 단계에도 살짝 울퉁불퉁                                // 0~5초 가장자리 울퉁불퉁
+    bulge: [ss(1.8, 2.8, t) * (1 - ss(3.3, 4.2, t)), ss(3.8, 4.5, t) * (1 - ss(5.5, 6.5, t))],   // 오른쪽·위 부풂
+    cuFold: ss(5.0, 6.5, t),                                                         // 구리 단계 아래 테두리 주름
     bubRot: 0.6 * ss(0.6, 4.6, t) + 0.25 * ss(4.6, DUR, t),
-    rotZ: THREE.MathUtils.degToRad(-10 * e), tiltY: 0.10 - 0.12 * ss(2, 6, t),
+    rotZ: THREE.MathUtils.degToRad(-10 * e), tiltY: 0.06 - 0.08 * ss(2, 6, t),
     wob: 0.03 * Math.sin(t * 2.2) * (ss(0.5, 1.5, t) * (1 - ss(4, 6, t))),
   };
 }
@@ -484,6 +595,7 @@ function applyParams(P, swirlT) {
   u.uSwirlC.value.set(P.swirl[0], P.swirl[1]); u.uSwirlRad.value = P.swirl[2]; u.uSwirlAmt.value = P.swirlAmt; u.uSwirlT.value = swirlT;
   u.uDrip.value.set(P.drip[0], P.drip[1], P.drip[2], P.drip[3]); u.uDripW.value = P.drip[4]; u.uDripAmt.value = P.dripAmt;
   u.uBlob.value.set(...P.blob); u.uRimFlow.value = P.rimFlow;
+  u.uCrinkle.value = P.crinkle; u.uRingAmt.value = P.ringAmt; u.uRingR.value = P.ringR; u.uWobble.value = P.wobble; u.uBulge.value.set(...P.bulge); u.uCuFold.value = P.cuFold; u.uBubRot.value = P.bubRot;
   // 바탕 기포: 원래 자리를 bubRot만큼 돌림 / 30·31칸: 움직이는 기포
   const c = Math.cos(P.bubRot), s = Math.sin(P.bubRot);
   BUBBLES.forEach((b, i) => { u.uBub.value[i].set(b[0] * c - b[1] * s, b[0] * s + b[1] * c, b[2], b[3]); u.uBubS.value[i].set(b[4], b[5] + P.bubRot); });
@@ -506,6 +618,7 @@ function frame(t, tl = null) {
   for (const j of jellies) {
     j.group.updateMatrixWorld(true);
     j.material.uniforms.uInv.value.copy(j.group.matrixWorld).invert();
+    if (j.material.uniforms.uGrp) j.material.uniforms.uGrp.value.copy(j.group.matrixWorld);
     if (j.clay) { j.clay.update(t); j.material.uniforms.uGrow.value = Math.cbrt(j.clay.state.shape.volume || 1); }
   }
   if (showHud) drawHud();
