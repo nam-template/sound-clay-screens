@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gel Drop</title>
+<style>
+  /* 레퍼런스(파란 배경 위 젤리 방울 하나: 파랑 → 소용돌이 → 구리색) 재현 화면 + 소리찰흙 모듈. 기본은 글자 없음, H 키로 패널·버튼 켜기 */
+  html,body{margin:0;height:100%;background:#6f87c8;overflow:hidden;font:11px/1.45 Inter,system-ui,sans-serif;color:#fff}
+  body{display:flex;align-items:center;justify-content:center}
+  #stage{position:relative}
+  canvas{display:block}
+  .off{display:none!important}
+  /* HUD: 03 index.html 의 MIX RATIO · SHAPE → VOICE 형식(흰 선·작은 글자) */
+  #hud{position:absolute;left:16px;top:16px;width:150px;pointer-events:none;mix-blend-mode:difference}
+  #hud h4{margin:12px 0 2px;font:600 13px/1 "Barlow Condensed",Inter,sans-serif;letter-spacing:.03em}
+  #hud .rule{height:1px;background:#fff;margin:4px 0 6px}
+  #hud .row{display:flex;justify-content:space-between;font-size:10px;margin-top:5px}
+  #hud .sub{font-size:8px;opacity:.7;margin-top:-1px}
+  #hud .bar{height:3px;background:#fff;margin-top:2px}
+  #hud .track{height:1px;background:#fff6;margin-top:-2px}
+  #ctl{position:absolute;left:12px;right:12px;bottom:10px;display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+  #ctl button,#ctl select{font:inherit;background:#0008;color:#fff;border:1px solid #fff5;border-radius:4px;padding:3px 8px;cursor:pointer}
+  #ctl select option{color:#000}
+  #hint{position:absolute;left:12px;right:12px;bottom:64px;font-size:10px;opacity:.85;mix-blend-mode:difference;pointer-events:none}
+  #hkey{position:absolute;right:10px;bottom:8px;font-size:10px;opacity:.3;color:#000;pointer-events:none}
+  #feel{position:absolute;right:12px;top:12px;width:250px;max-height:calc(100% - 70px);overflow:auto;background:#141110e8;border:1px solid #fff3;border-radius:8px;padding:10px 12px;z-index:50}
+  #feel label{display:block;margin:6px 0} #feel label div{display:flex;justify-content:space-between;opacity:.85}
+  #feel input[type=range]{width:100%}
+  #feel .bar{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+  #feel button,#feel input[type=text]{font:inherit;background:#0006;color:#fff;border:1px solid #fff4;border-radius:4px;padding:3px 6px}
+  #feel input[type=text]{width:100%;box-sizing:border-box;margin-bottom:4px}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="hud" class="off"></div>
+  <div id="hint" class="off">왼드래그 당기기 · Ctrl 드래그 홈 · 오른드래그(Shift) 문지르기: 천천히=SINE 왔다갔다=SQUARE 빠르게=WHITE 튕기기=NEEDLE 꾹=PINK · Alt 지우기 · 휠 찰흙 더하기/덜기 · F 브러시 크기 · Shift+F 세기 · Ctrl+Z / Ctrl+Shift+Z · 만진 방울은 계속 노래(■ 모두 멈춤) · 🎤·🎵(끌어다 놓기)는 방울이 들음 · H 숨기기</div>
+  <div id="ctl" class="off"></div>
+  <div id="feel" class="off"></div>
+  <div id="hkey">H</div>
+</div>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { MarchingCubes } from 'three/addons/objects/MarchingCubes.js';
+// 모듈 사본(원본·관리: ../../03_소리찰흙/작업/sound-clay.js — 여기서는 고치지 않음, 새 판은 다시 복사)
+import { createSoundClay, SHAPES, VOICES, WAVES, FEEL_SCHEMA, RULES } from './sound-clay.js';
+
+/* ---------------------------------------------------------------
+   옵션
+   ?mute=1   → 소리 계산만, 스피커 출력 없음(테스트는 항상 이걸로)
+   ?t=5      → 레퍼런스 타임라인(0~10.45초)의 그 순간에 멈춤(정지 비교용)
+   ?still=1  → 움직임 멈춤(t=0 모습)
+   ?hud=1    → 패널·버튼 켠 채로 시작(기본은 꺼짐, H 키로 토글)
+   ?rec=1    → 728×884, 24fps × 251장 프레임을 로컬 서버(/frame/N)로 보냄(영상 만들기용, 소리 꺼짐). ?rec=0,96 → 그 프레임만
+   --------------------------------------------------------------- */
+const q = new URLSearchParams(location.search);
+const REC = q.has('rec'), MUTE = q.has('mute') || REC;
+const FIXED_T = q.has('t') ? +q.get('t') : q.has('still') ? 0 : null;
+const DUR = 10.45, NFR = 251;   // 원본 길이(초)·프레임 수(24fps)
+
+/* ---------- 프레임(원본 728×884) ---------- */
+const VW = 728, VH = 884, ASPECT = VW / VH, FOV = 26, CAMZ = 12;
+const H = 2 * CAMZ * Math.tan(THREE.MathUtils.degToRad(FOV / 2)), W = H * ASPECT;   // z=0에서 보이는 프레임 크기(월드)
+const PX = H / VH;                                                                   // 원본 1픽셀 = 월드 길이
+const px2w = (x, y) => [(x / VW - 0.5) * W, (0.5 - y / VH) * H];
+
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: REC });
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;   // 셰이더가 화면 값을 직접 냄(원본 픽셀값 = 셰이더 값)
+renderer.autoClear = true;
+stage.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(FOV, ASPECT, 0.1, 100);
+camera.position.set(0, 0, CAMZ);
+
+const shared = { uTime: { value: 0 }, uRes: { value: new THREE.Vector2(1, 1) } };
+function fit() {
+  let w, h;
+  if (REC) { w = VW; h = VH; renderer.setPixelRatio(1); }
+  else { h = Math.min(innerHeight, innerWidth / ASPECT); w = h * ASPECT; renderer.setPixelRatio(Math.min(2, devicePixelRatio)); }
+  renderer.setSize(Math.round(w), Math.round(h));
+  stage.style.width = Math.round(w) + 'px'; stage.style.height = Math.round(h) + 'px';
+  shared.uRes.value.set(Math.round(w) * renderer.getPixelRatio(), Math.round(h) * renderer.getPixelRatio());
+}
+
+/* ---------- 공통 GLSL: 노이즈 · 배경 그라데이션(원본 첫 프레임에서 잰 값) ----------
+   배경은 위 짙은 파랑 → 아래 거의 흰 라벤더. 오른쪽이 조금 더 어둡고, 아래로 갈수록 그 차이가 커짐 */
+const GLSL = /* glsl */`
+  uniform float uTime; uniform vec2 uRes;
+  float hash(vec2 p){ p = fract(p*vec2(443.897,441.423)); p += dot(p, p.yx+19.19); return fract((p.x+p.y)*p.x); }
+  vec3 grain(vec3 c){ float n = hash(gl_FragCoord.xy + fract(uTime*7.31)*vec2(91.7,53.3)) - 0.5; return c + n*0.018; }
+  vec3 stops(float v, vec3 c0, vec3 c1, vec3 c2, vec3 c3, vec3 c4, vec3 c5, vec3 c6){
+    const float s0=0.02, s1=0.17, s2=0.34, s3=0.50, s4=0.68, s5=0.85, s6=0.98;
+    if (v < s1) return mix(c0, c1, clamp((v-s0)/(s1-s0), 0.0, 1.0));
+    if (v < s2) return mix(c1, c2, (v-s1)/(s2-s1));
+    if (v < s3) return mix(c2, c3, (v-s2)/(s3-s2));
+    if (v < s4) return mix(c3, c4, (v-s3)/(s4-s3));
+    if (v < s5) return mix(c4, c5, (v-s4)/(s5-s4));
+    return mix(c5, c6, clamp((v-s5)/(s6-s5), 0.0, 1.0));
+  }
+  vec3 bg(vec2 uv){
+    float v = 1.0 - uv.y;
+    vec3 L = stops(v, vec3(43,73,139), vec3(68,97,168), vec3(101,130,199), vec3(133,157,214), vec3(172,191,228), vec3(212,220,241), vec3(236,240,253));
+    vec3 R = stops(v, vec3(37,67,131), vec3(54,83,152), vec3(76,105,176), vec3(122,145,209), vec3(152,172,220), vec3(168,186,228), vec3(186,198,232));
+    return mix(L, R, smoothstep(0.25, 1.0, uv.x)) / 255.0;
+  }
+`;
+
+/* 배경: 화면 전체 삼각형 하나(깊이 맨 뒤) */
+const bgMesh = new THREE.Mesh(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3)),
+  new THREE.ShaderMaterial({ uniforms: shared, depthWrite: false, depthTest: false,
+    vertexShader: 'void main(){ gl_Position = vec4(position.xy, 0.9999, 1.0); }',
+    fragmentShader: GLSL + 'void main(){ gl_FragColor = vec4(grain(bg(gl_FragCoord.xy / uRes)), 1.0); }' }));
+bgMesh.frustumCulled = false; bgMesh.renderOrder = -1; scene.add(bgMesh);
+
+/* ---------- 방울 재질 ----------
+   메시가 무엇이든(마칭큐브) position·normal만 있으면 동작. 색·기포·소용돌이는 '오브젝트 공간'(uInv)에서 계산 → 당겨도 따라감.
+   가운데는 밝고(바닥 면이 비침) 가장자리 띠는 짙음. 아래 가장자리 안쪽은 두꺼워서 빛이 모임(파랑 단계 하늘색 / 구리 단계 주황).
+   기포: 공·길쭉한 타원체를 굴절된 시선과 직접 교차해서 그림(테두리 어둡고 위왼쪽 반짝임) */
+const NB = 32;
+function makeDropMaterial(o) {
+  const bub = [], bubS = [];
+  for (let i = 0; i < NB; i++) { const b = o.bubbles[i] || [9, 9, 9, 0.001, 1, 0]; bub.push(new THREE.Vector4(b[0], b[1], b[2], b[3])); bubS.push(new THREE.Vector2(b[4], b[5])); }
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      ...shared,
+      uInv: { value: new THREE.Matrix4() }, uR: { value: o.R }, uIor: { value: 1.38 },
+      uT: { value: 0 }, uPal: { value: PALETTE.map(c => new THREE.Vector3(...c.map(x => x / 255))) },   // 색은 자리마다 따로 바뀜(가장자리 먼저)
+      uSwirlAmt: { value: 0 }, uSwirlT: { value: 0 }, uSwirlC: { value: new THREE.Vector2() }, uSwirlRad: { value: 0.2 },
+      uDrip: { value: new THREE.Vector4() }, uDripW: { value: 0.04 }, uDripAmt: { value: 0 },
+      uBlob: { value: new THREE.Vector4(9, 9, 0.01, 0) }, uRimFlow: { value: 0 },
+      uBub: { value: bub }, uBubS: { value: bubS },
+      uGrow: { value: 1 },   // 휠로 부피를 바꾸면 무늬(기포·띠)도 같이 커짐 = ∛부피
+    },
+    vertexShader: /* glsl */`
+      varying vec3 vW, vN;
+      void main(){
+        vec4 wp = modelMatrix * vec4(position, 1.);
+        vW = wp.xyz; vN = normalize(mat3(modelMatrix) * normal);
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }`,
+    fragmentShader: GLSL + /* glsl */`
+      #define NB ${NB}
+      uniform mat4 uInv; uniform float uR, uIor, uSwirlAmt, uSwirlT, uSwirlRad, uGrow, uT, uDripW, uDripAmt, uRimFlow;
+      uniform vec2 uSwirlC; uniform vec4 uDrip, uBlob;
+      uniform vec3 uPal[12]; uniform vec4 uBub[NB]; uniform vec2 uBubS[NB];
+      vec3 cC, cD, cO, cHi;                                  // 이 픽셀의 색(가운데·띠·아래 두꺼운 곳·밝은 띠)
+      #define uC cC
+      #define uD cD
+      #define uO cO
+      #define uHi cHi
+      vec3 pal3(float h, int k){ return h < 0.5 ? mix(uPal[k], uPal[4+k], h/0.5) : mix(uPal[4+k], uPal[8+k], (h-0.5)/0.5); }
+      float sstep(float a, float b, float x){ float t = clamp((x-a)/(b-a), 0.0, 1.0); return t*t*(3.0-2.0*t); }
+      // 선분 거리(흐름 줄기용)
+      vec2 segD(vec2 p, vec2 a, vec2 b){ vec2 pa = p - a, ba = b - a; float h = clamp(dot(pa, ba)/dot(ba, ba), 0.0, 1.0); return vec2(length(pa - ba*h), h); }
+      float vn2(vec2 x){ vec2 i = floor(x), f = fract(x); f = f*f*(3.0-2.0*f);
+        return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y); }
+      varying vec3 vW, vN;
+      // 반사로 보이는 스튜디오: 위쪽 큰 소프트박스(흰색), 아래는 배경 파랑
+      vec3 env(vec3 r){ float up = smoothstep(-0.2, 0.9, r.y*0.85 + r.x*0.25); return mix(vec3(0.30,0.40,0.70), vec3(1.0), up); }
+      mat2 rot(float a){ float c = cos(a), s = sin(a); return mat2(c, -s, s, c); }
+      void main(){
+        vec3 n = normalize(vN);
+        vec3 v = normalize(vW - cameraPosition);
+        if (dot(n, v) > 0.0) n = -n;
+        float ndv = clamp(-dot(n, v), 0.0, 1.0);
+        vec3 pL = (uInv * vec4(vW, 1.)).xyz / uGrow, nL = normalize(mat3(uInv) * n), vL = normalize(mat3(uInv) * v);
+        vec3 rd = refract(vL, nL, 1.0/uIor);
+        vec3 rf = reflect(v, n);
+        float fres = 0.025 + 0.975*pow(1.0 - ndv, 5.0);
+        vec3 P = pL / uR;                                   // 방울 반지름 = 1
+        // 흐름 7) 색 바뀜: 바깥 띠와 오른쪽 아래가 먼저(최대 약 1초 빨리), 가운데가 마지막
+        float lead = 0.9*sstep(0.4, 0.95, length(P.xy)) + 0.4*sstep(0.0, 0.8, P.x - P.y);
+        float hh = sstep(3.0, 6.6, uT + lead);
+        cC = pal3(hh, 0); cD = pal3(hh, 1); cO = pal3(hh, 2); cHi = pal3(hh, 3);
+
+        // 1) 몸통: 가운데 밝은 원판(바닥 면이 비침, 굴절로 밀림) + 바깥 두꺼운 유리 띠(짙은 색 + 안쪽 반사 줄)
+        vec2 Q = P.xy + rd.xy * 0.30;
+        float rr = length(Q), r0 = length(P.xy), a0 = atan(P.y, P.x);
+        vec3 disc = mix(uC * 1.04, uC * 0.92, smoothstep(0.1, 0.72, rr));
+        float lowerR = smoothstep(0.25, -0.75, P.y), upperR = smoothstep(-0.1, 0.8, P.y) * smoothstep(0.7, -0.3, P.x);
+        float lowC = smoothstep(-0.35, -0.85, P.y) * smoothstep(0.75, 0.2, abs(P.x + 0.15));   // 아래 가운데 두꺼운 곳에만 빛이 모임
+        vec3 ring = mix(uD, uO, lowC * 0.8);
+        float streak = pow(0.5 + 0.5*sin(a0*7.0 + r0*26.0 + uT*0.25), 8.0) * 0.6 + pow(0.5 + 0.5*sin(a0*3.0 - r0*40.0), 14.0) * 0.5;
+        ring = mix(ring, uHi, clamp(upperR*0.30 + streak*0.22, 0.0, 1.0));
+        float band = smoothstep(0.60, 0.72, mix(r0, rr, 0.5));
+        ring *= 0.85;
+        vec3 col = mix(disc, ring, band);
+        col += uHi * 0.30 * exp(-pow((rr - 0.715)/0.018, 2.0)) * (0.4 + upperR);          // 원판 테두리의 밝은 선
+        col += mix(uHi, uO, lowerR) * 0.35 * exp(-pow((r0 - 0.95)/0.025, 2.0));            // 바깥 끝 밝은 선
+        // 굴절된 배경이 조금 비침
+        vec3 rdW = refract(v, n, 1.0/uIor);
+        vec2 uv = gl_FragCoord.xy / uRes + rdW.xy * vec2(0.10, 0.10*${ASPECT.toFixed(4)}) * (1.0 - ndv);
+        col = mix(col, bg(uv) * (uC*1.1 + 0.15), 0.12);
+
+        // 흐름 1) 왼쪽 소용돌이(0.25~4.5초): 왼쪽 가장자리에서 작은 고리로 생겨, 커지며 가운데 쪽으로 옮겨 와 방울 전체로 퍼짐. 반시계로 감김
+        vec2 Qs = Q - uSwirlC;
+        float rs = length(Qs), a = atan(Qs.y, Qs.x);
+        // 원본은 깨끗한 나선이 아니라 젤리가 접힌 유리 주름: 굵기·간격이 흔들리고 군데군데 끊긴 호. 밝은 줄 옆에 어두운 그림자 줄이 붙음
+        float wob = vn2(vec2(a*1.2, rs*3.0) + 3.7) - 0.5;
+        float ph = rs*20.0/max(uSwirlRad, 0.3) * 0.5 - a*1.0 - uSwirlT*3.0 + wob*1.2;   // 고리 2~3겹(반지름이 커지면 간격도 넓어짐)
+        float gate = smoothstep(0.15, 0.45, vn2(vec2(a*1.3 + uSwirlT*0.3, rs*1.5)));
+        float sw = smoothstep(0.02, 0.10, rs) * smoothstep(uSwirlRad*1.15, uSwirlRad*0.7, rs) * smoothstep(0.98, 0.80, rr) * uSwirlAmt * gate;
+        float s1 = pow(0.5 + 0.5*sin(ph), 16.0), s2 = pow(0.5 + 0.5*sin(ph - 0.9), 6.0);
+        col = col * (1.0 - 0.42*s2*sw) + uHi * 0.40 * s1 * sw;
+
+        // 흐름 2) 위오른쪽 세로 물길(0~3.4초): 위 가장자리에서 아래로 늘어진 유리 관. 시계 방향으로 오른쪽 가장자리로 쓸려 가며 짧아짐
+        { vec2 sg = segD(Q, uDrip.xy, uDrip.zw);
+          float dd = sg.x / (uDripW * (0.55 + 0.9*sg.y));                               // 아래 끝이 매달린 방울처럼 굵어짐
+          float m = smoothstep(1.0, 0.85, dd) * uDripAmt;
+          vec3 tube = mix(col*1.22 + 0.06, col*0.40, smoothstep(0.45, 0.95, dd));      // 안 밝고 테두리 어두움
+          tube += vec3(0.6) * exp(-pow((dd - 0.25)/0.12, 2.0)) * 0.6;                   // 관 안 반짝 줄
+          col = mix(col, tube, m); }
+
+        // 흐름 4) 오른쪽 가장자리 물결(2~5.5초): 띠 안에서 줄무늬가 시계 방향으로 흘러내림
+        { float rw = pow(0.5 + 0.5*sin(a0*9.0 + uT*2.4 + r0*18.0), 10.0) * band * sstep(-0.3, 0.6, P.x) * uRimFlow;
+          col = col*(1.0 - 0.25*rw) + uHi * 0.35 * pow(0.5 + 0.5*sin(a0*9.0 + uT*2.4 + r0*18.0 + 0.8), 16.0) * band * sstep(-0.3, 0.6, P.x) * uRimFlow; }
+
+        // 흐름 6) 주황 물감 덩어리(4.4~7.5초): 오른쪽 아래 가장자리에서 생겨 오른쪽 가장자리를 타고 올라간 뒤 안으로 들어오며 풀림
+        { vec2 bq = (Q - uBlob.xy) / uBlob.z; bq.x *= 0.85;
+          float bd = length(bq + 0.12*vec2(sin(bq.y*3.0 + uT*2.0), cos(bq.x*3.0 - uT*1.7)));
+          float m = smoothstep(1.0, 0.8, bd) * uBlob.w;
+          vec3 oc = mix(vec3(0.93, 0.60, 0.34), vec3(0.55, 0.22, 0.08), smoothstep(0.3, 0.95, bd));
+          oc += vec3(0.9, 0.85, 0.8) * exp(-dot(bq - vec2(-0.3, 0.35), bq - vec2(-0.3, 0.35)) / 0.03);
+          col = mix(col, oc, m); }
+
+        // 3) 기포: 굴절된 시선(pL → rd)과 타원체 교차
+        // (흐름 3·5와 바탕 기포의 회전은 JS에서 기포 위치를 매 프레임 옮겨서 넣음)
+        vec3 o = P; vec3 d = normalize(rd);
+        for (int i = 0; i < NB; i++){
+          vec4 B = uBub[i]; vec2 S = uBubS[i];
+          vec3 lo = o - B.xyz, ld = d;
+          lo.xy = rot(-S.y) * lo.xy; ld.xy = rot(-S.y) * ld.xy;
+          lo.x /= S.x; ld.x /= S.x;
+          float L = length(ld); ld /= L;
+          float tc = -dot(lo, ld);
+          if (tc < 0.0) continue;
+          vec3 cp = lo + ld * tc;
+          float qq = length(cp) / B.w;
+          if (qq >= 1.0) continue;
+          vec2 w = cp.xy / B.w;
+          float edge = smoothstep(0.55, 0.92, qq) * (1.0 - smoothstep(0.93, 1.0, qq));
+          vec3 bc = mix(col * 1.18 + 0.05, col * 0.38, edge);                         // 안은 밝고 테두리는 어둡게
+          bc += vec3(0.85) * exp(-dot(w - vec2(-0.32, 0.38), w - vec2(-0.32, 0.38)) / 0.035);   // 위왼쪽 반짝임
+          bc += vec3(0.35) * exp(-pow((qq - 0.80)/0.06, 2.0)) * smoothstep(0.2, -0.6, w.y);    // 아래쪽 안 밝은 테
+          col = mix(col, bc, smoothstep(1.0, 0.94, qq));
+        }
+
+        // 4) 가장자리: 어둡게 + 무지개 테두리(빨강·하늘색 띠)
+        col *= mix(0.62, 1.0, smoothstep(0.0, 0.32, ndv));
+        col = mix(col, uD * 0.75, (1.0 - smoothstep(0.04, 0.28, ndv)) * 0.45);
+        col += vec3(0.55, 0.10, 0.22) * exp(-pow((ndv - 0.10)/0.035, 2.0));
+        col += vec3(0.12, 0.45, 0.60) * exp(-pow((ndv - 0.18)/0.040, 2.0));
+
+        // 5) 반사 · 하이라이트
+        fres *= 0.45;
+        col = col*(1.0 - fres) + env(rf)*fres;
+        vec3 L1 = normalize(vec3(-0.25, 0.80, 0.55)), L2 = normalize(vec3(0.55, 0.55, 0.62));
+        float h1 = pow(max(dot(rf, L1), 0.0), 900.0), h2 = pow(max(dot(rf, L2), 0.0), 1400.0);
+        col += vec3(1.0) * (h1*0.55 + h2*0.45);
+        gl_FragColor = vec4(grain(col), 1.0);
+      }`,
+  });
+}
+
+/* ---------- 거리함수(안쪽 음수, 월드 단위, 오브젝트 중심 기준) ----------
+   납작한 회전타원체(앞으로 볼록) + 뒷면을 평평하게 자름(유리판에 놓인 방울) + 오른쪽 살짝 부푼 혹 */
+const smin = (a, b, k) => { const h = Math.max(k - Math.abs(a - b), 0) / k; return Math.min(a, b) - h * h * k * 0.25; };
+const smax = (a, b, k) => -smin(-a, -b, k);
+function dropSDF(R) {
+  const rx = R, ry = R * 0.98, rz = R * 0.62;
+  return (x, y, z) => {
+    const k0 = Math.hypot(x / rx, y / ry, z / rz), k1 = Math.hypot(x / (rx * rx), y / (ry * ry), z / (rz * rz));
+    let d = k1 < 1e-9 ? -rz : k0 * (k0 - 1) / k1;
+    d = smax(d, -z - R * 0.28, 0.25);                                                            // 뒷면 평평
+    d = smin(d, Math.hypot(x - R * 0.90, y + R * 0.10, z + R * 0.02) - R * 0.11, 0.12);          // 오른쪽 작은 혹
+    return d;
+  };
+}
+
+/* ---------- 오브젝트(원본 픽셀에서 잰 배치) ----------
+   방울 중심 (362, 443)px, 반지름 약 220px. 화면을 향해 위가 조금 뒤로 기울어 아래 두께가 보임 */
+const R = 220 * PX;
+// 기포 [x, y, z, r, 길쭉함, 각도] — 방울 반지름 1 기준(원본 9초 프레임에서 눈대중)
+const BUBBLES = [
+  [-0.05, 0.12, 0.05, 0.055, 1, 0], [0.12, 0.01, 0.05, 0.045, 1, 0], [-0.12, -0.05, 0.05, 0.035, 1, 0], [0.18, -0.17, 0.05, 0.065, 1.1, 0.4],
+  [-0.40, -0.40, 0.0, 0.07, 1.9, 0.9], [0.40, -0.42, 0.0, 0.06, 1.9, 0.5], [-0.12, 0.42, 0.0, 0.05, 2.2, 0.35], [-0.05, 0.72, -0.05, 0.06, 1.3, 0.2],
+  [0.42, 0.30, 0.02, 0.02, 2.5, 1.2], [-0.30, 0.28, 0.02, 0.015, 1, 0],
+];
+{ // 작은 점 기포(고정 시드)
+  let s = 7; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
+  while (BUBBLES.length < NB - 2) { const r = 0.62 * Math.sqrt(rnd()), a = rnd() * 6.283; BUBBLES.push([r * Math.cos(a), r * Math.sin(a), -0.1 + 0.2 * rnd(), 0.008 + 0.014 * rnd(), rnd() < 0.3 ? 2.2 : 1, rnd() * 3]); }
+}
+// 마지막 두 칸(30·31)은 움직이는 기포 자리: 흐름 3(오른쪽 아래 길쭉한 기포) · 흐름 5(위 가장자리 큰 공기주머니)
+// 색: [가운데, 바깥 띠, 아래 두꺼운 곳, 밝은 띠] × [파랑, 라벤더, 구리]
+const PALETTE = [
+  [100, 146, 218], [8, 60, 158], [70, 160, 238], [196, 232, 252],
+  [140, 136, 184], [50, 48, 108], [150, 120, 190], [214, 200, 236],
+  [170, 132, 134], [104, 32, 12], [168, 82, 36], [236, 190, 172],
+];
+const LAYOUT = [
+  { name: 'drop', px: [362, 443], z: 0, rot: [-0.42, 0.10, 0.0], voice: 'toy', note: 220.00,   // A3
+    sdf: dropSDF(R), grid: 76, mat: { R, bubbles: BUBBLES } },
+];
+/* 화음 모드(sound-clay 5-1절): 04·05와 같은 키(A 장화음 A·C#·E). 방울 하나가 A3을 맡음(toy가 2~3음을 흩어 쳐서 화음이 됨) */
+const KEY = { rootHz: 110, scale: 'chord' };
+
+const jellies = LAYOUT.map((L, i) => {
+  const material = makeDropMaterial(L.mat);
+  const group = new THREE.Group(); scene.add(group);
+  const [hx, hy] = px2w(...L.px);
+  const home = new THREE.Vector3(hx, hy, L.z);
+  group.position.copy(home); group.rotation.set(...L.rot);
+  return { name: L.name, index: i, group, material, home, rotHome: group.rotation.clone(), voice: L.voice, note: L.note, sdf: L.sdf, grid: L.grid, clay: null };
+});
+window.__jellies = jellies; window.__cam = camera;
+
+/* =================================================================
+   ▼▼▼ sound-clay 붙이는 자리 (HOOK) — 05 잉크 젤리 화면과 같은 구조 ▼▼▼
+   ================================================================= */
+let FEEL = null;
+const FEEL_LS = 'soundclay.geldrop.feel.v1';
+function attachSoundClay(j) {
+  j.clay = createSoundClay({
+    THREE, MarchingCubes, parent: j.group, camera, canvas: renderer.domElement,
+    material: j.material,                                // 원본 재질(젤리 방울 + 기포)이 마칭큐브 표면에 그대로
+    base: SHAPES.custom(j.sdf),                          // 실제 모양: 납작한 방울 + 평평한 뒷면 + 오른쪽 혹
+    voice: j.voice, mute: MUTE, feel: FEEL,
+    rotateOnEmptyDrag: false,
+    exclusiveVoice: false,                               // 만진 방울은 계속 노래 — 멈추기는 '모두 멈춤'
+    key: KEY, note: j.note,
+    rules: { grid: { resolution: j.grid } },
+    onFeelChange: f => { saveFeel(f); feelPanel && feelPanel.refresh(); },
+  });
+  return j.clay;
+}
+function saveFeel(f) { try { localStorage.setItem(FEEL_LS, JSON.stringify(f)); } catch (_) {} }
+/* ▲▲▲ HOOK 끝 ▲▲▲ */
+
+const clays = () => jellies.filter(d => d.clay).map(d => d.clay);
+const activeJ = () => jellies.find(d => d.clay && d.clay.active) || null;
+const targetJ = () => activeJ() || jellies[0];
+
+/* ---------- 컨트롤(H 키로 표시) ---------- */
+let feelPanel = null;
+function buildUI() {
+  const ctl = document.getElementById('ctl');
+  const btn = (label, fn) => { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; ctl.appendChild(b); return b; };
+  const sel = document.createElement('select');
+  VOICES.forEach(v => { const op = document.createElement('option'); op.value = v; op.textContent = '목소리: ' + v; sel.appendChild(op); });
+  sel.onchange = () => { const d = targetJ(); d.clay.setVoice(sel.value); d.voice = sel.value; };
+  ctl.appendChild(sel);
+  const snd = btn('🔊 소리', () => { const d = targetJ(); d.clay.state.playing ? d.clay.stop() : d.clay.start(); });
+  btn('■ 모두 멈춤', () => clays().forEach(c => c.state.playing && c.stop()));
+  let listener = null;
+  const micB = btn('🎤 내 목소리', async () => {
+    if (listener && listener.clay.listening === 'MIC') { listener.clay.stopListening(); listener = null; }
+    else { stopAllListening(); listener = targetJ(); listener.clay.activate();
+      try { await listener.clay.listen('mic'); } catch (e) { alert('마이크를 못 열었어(내장 브라우저 창에선 막힘 → 크롬 localhost로): ' + e.message); listener = null; } }
+    showListen(); });
+  const fileB = btn('🎵 음성 파일', () => { if (listener && listener.clay.listening === 'FILE') { listener.clay.stopListening(); listener = null; showListen(); } else afile.click(); });
+  const afile = document.createElement('input'); afile.type = 'file'; afile.accept = 'audio/*'; afile.style.display = 'none'; document.body.appendChild(afile);
+  const playFile = async f => { stopAllListening(); listener = targetJ(); listener.clay.activate();
+    try { await listener.clay.listen(f); } catch (e) { alert('음성 파일을 못 읽었어: ' + e.message); listener = null; } showListen(); };
+  afile.onchange = () => { if (afile.files[0]) playFile(afile.files[0]); afile.value = ''; };
+  addEventListener('dragover', e => e.preventDefault());
+  addEventListener('drop', e => { e.preventDefault(); const f = [...e.dataTransfer.files].find(x => x.type.startsWith('audio/') || /\.(wav|mp3|m4a|ogg|flac|webm)$/i.test(x.name)); if (f) playFile(f); });
+  function stopAllListening() { clays().forEach(c => c.listening && c.stopListening()); listener = null; }
+  function showListen() { const l = listener && listener.clay.listening;
+    micB.textContent = l === 'MIC' ? '⏹ 목소리 끄기 (' + listener.name + ')' : '🎤 내 목소리';
+    fileB.textContent = l === 'FILE' ? '⏹ 파일 끄기 (' + listener.name + ')' : '🎵 음성 파일'; }
+  const feelB = btn('감각', () => document.getElementById('feel').classList.toggle('off'));
+  btn('↺ 방울 초기화', () => targetJ().clay.reset());
+  feelPanel = buildFeelPanel(feelB);
+  return { sel, snd };
+}
+function buildFeelPanel(feelB) {
+  const fp = document.getElementById('feel');
+  fp.innerHTML = '<b style="font-size:12px">감각 프리셋 (방울)</b>';
+  const setAll = f => { clays().forEach(c => c.setFeel(f)); };
+  const cur = () => (jellies[0].clay).getFeel(nameIn.value || 'drop');
+  const rows = {};
+  const nameIn = document.createElement('input'); nameIn.type = 'text'; nameIn.value = (FEEL && FEEL.name) || '기본';
+  fp.appendChild(nameIn);
+  FEEL_SCHEMA.forEach(f => {
+    const row = document.createElement('label'), top = document.createElement('div'), name = document.createElement('span'), t = document.createElement('span');
+    name.textContent = f.label; const r = document.createElement('input'); r.type = 'range'; r.min = f.min; r.max = f.max; r.step = f.step;
+    const d = Math.max(0, -Math.floor(Math.log10(f.step)));
+    r.oninput = () => { setAll({ values: { [f.key]: +r.value } }); t.textContent = (+r.value).toFixed(d); saveFeel(cur()); };
+    top.append(name, t); row.append(top, r); fp.appendChild(row); rows[f.key] = { r, t, d };
+  });
+  const bar = document.createElement('div'); bar.className = 'bar'; fp.appendChild(bar);
+  const mkB = (label, fn) => { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; bar.appendChild(b); };
+  const refresh = () => { const v = jellies[0].clay.getFeel().values; for (const k in rows) { rows[k].r.value = v[k]; rows[k].t.textContent = (+v[k]).toFixed(rows[k].d); } };
+  mkB('복사', async () => { const s = JSON.stringify(cur(), null, 2); try { await navigator.clipboard.writeText(s); feelB.textContent = '감각 ✓복사'; setTimeout(() => feelB.textContent = '감각', 1200); } catch (_) { alert(s); } });
+  mkB('파일로 저장', () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(cur(), null, 2)], { type: 'application/json' })); a.download = `sound-clay-feel_${nameIn.value || 'drop'}.json`; a.click(); });
+  const fileIn = document.createElement('input'); fileIn.type = 'file'; fileIn.accept = '.json,application/json'; fileIn.style.display = 'none'; fp.appendChild(fileIn);
+  fileIn.onchange = async () => { const f = fileIn.files[0]; if (!f) return; try { const j = JSON.parse(await f.text()); setAll(j); if (j.name) nameIn.value = j.name; refresh(); saveFeel(cur()); } catch (e) { alert('프리셋을 읽지 못했어: ' + e.message); } fileIn.value = ''; };
+  mkB('불러오기', () => fileIn.click());
+  mkB('기본값', () => { const v = {}; FEEL_SCHEMA.forEach(f => v[f.key] = f.key === 'stiffness' ? RULES.pull.stiffness : f.key === 'spread' ? RULES.pull.spread : f.key.split('.').reduce((a, k) => a[k], RULES));
+    if (FEEL_DEFAULT) Object.assign(v, FEEL_DEFAULT.values); setAll({ values: v }); nameIn.value = '기본'; refresh(); saveFeel(cur()); });
+  refresh();
+  return { refresh };
+}
+
+/* ---------- HUD(H 키): 방울의 MIX RATIO · SHAPE → VOICE ---------- */
+const hudEl = document.getElementById('hud');
+hudEl.innerHTML = `<div id="hName" class="row" style="margin-top:0"></div>
+  <h4>MIX RATIO</h4><div id="hF0" class="sub"></div><div class="rule"></div>` +
+  WAVES.map((w, i) => `<div class="row"><span>${w}</span><span id="hp${i}"></span></div><div class="bar" id="hb${i}" style="width:0"></div><div class="track"></div>`).join('') +
+  `<h4>SHAPE → VOICE</h4><div class="rule"></div>` +
+  [['SIZE', 'PITCH'], ['STRETCH', 'GLIDE'], ['HORN', 'TRILL'], ['LEAN', 'VIBRATO'], ['FLAT', 'NOTE LEN'], ['VOLUME', 'RING']]
+    .map(([a, b], i) => `<div class="row"><span>${a}</span><span id="hs${i}"></span></div><div class="sub">→ ${b}</div>`).join('') +
+  `<div id="hTag" class="sub" style="margin-top:8px"></div>`;
+const $ = id => document.getElementById(id);
+function drawHud() {
+  const d = targetJ(); if (!d || !d.clay) return;
+  const c = d.clay, St = c.state, V = St.voice;
+  $('hName').innerHTML = `<span>${d.name.toUpperCase()} · ${c.voice.toUpperCase()}</span><span>${St.playing ? '♪' : (c.listening || '—')}</span>`;
+  $('hF0').textContent = St.f0 > 0 ? 'f0 ' + (St.f0 / 1000).toFixed(2) + ' kHz' : 'f0 — (no pitch)';
+  St.share.forEach((s, k) => { $('hp' + k).textContent = (s * 100).toFixed(s < 0.1 && s > 0 ? 1 : 0) + '%'; $('hb' + k).style.width = (100 * s).toFixed(1) + '%'; });
+  const v = [V.pitch, V.sweep, V.rate, V.vib, V.dur, V.ring];
+  v.forEach((x, i) => $('hs' + i).textContent = i === 3 ? '±' + x.toFixed(0) + 'Hz' : i === 5 ? (x * 100).toFixed(0) + '%' : '×' + x.toFixed(2));
+  $('hTag').textContent = St.tag + ' · undo ' + c.history.undo;
+  if (ui) { ui.sel.value = c.voice; ui.snd.textContent = St.playing ? '🔇 소리 끄기' : '🔊 소리'; }
+}
+let showHud = q.has('hud');
+const setHud = on => { showHud = on; ['hud', 'ctl', 'hint'].forEach(id => $(id).classList.toggle('off', !on)); if (!on) $('feel').classList.add('off'); };
+addEventListener('keydown', e => { if ((e.key === 'h' || e.key === 'H') && !e.ctrlKey && !e.metaKey && !e.altKey && e.target.tagName !== 'INPUT') setHud(!showHud); });
+
+/* ---------- 시작 ---------- */
+let FEEL_DEFAULT = null, ui = null;
+fit(); addEventListener('resize', fit);
+try { FEEL_DEFAULT = await (await fetch('./feel/기본.json')).json(); } catch (_) {}
+try { const s = localStorage.getItem(FEEL_LS); FEEL = s ? JSON.parse(s) : FEEL_DEFAULT; } catch (_) { FEEL = FEEL_DEFAULT; }
+jellies.forEach(attachSoundClay);
+ui = buildUI(); setHud(showHud && !REC);
+if (REC) $('hkey').classList.add('off');
+window.__clays = clays();
+
+/* ---------- 타임라인: 원본 10.45초를 params(t)로 ----------
+   원본을 0.25초 간격으로 보고 찾은 흐름 7개(위치는 방울 반지름 1 기준, 위가 +y). 키프레임 값은 원본 프레임에서 눈대중으로 잼
+   1) 왼쪽 소용돌이     0.25초 왼쪽 가장자리(-0.84,0.10)에 작은 고리 → 커지며 가운데 쪽(-0.15,0)으로 → 4.5초쯤 사라짐. 반시계로 감김
+   2) 위오른쪽 세로 물길 0초 (0.25,0.82)~(0.22,0.12)로 늘어진 관 → 시계 방향으로 오른쪽 가장자리로 쓸려 가며 짧아짐 → 3.4초 사라짐
+   3) 오른쪽 아래 길쭉한 기포 0초 (0.33,-0.18) → 늘어나며 오른쪽으로 → 2.8초 오른쪽 가장자리에 흡수
+   4) 오른쪽 가장자리 물결 2~5.5초, 띠 안 줄무늬가 시계 방향으로 흘러내림
+   5) 위 가장자리 공기주머니 4초에 (0.15,0.8)에서 생겨 4.5~6초 크게 → 가늘어지며 7.5초 사라짐
+   6) 주황 물감 덩어리   4.4초 오른쪽 아래(0.6,-0.58)에서 생겨 오른쪽 가장자리를 타고 (0.73,-0.29)까지 올라감 → 7초 안쪽(0.45,-0.16)으로 들어오며 풀림 → 7.5초 사라짐
+   7) 색 바뀜          3~6.6초, 바깥 띠·오른쪽 아래가 먼저(최대 약 1초 빨리) 바뀌고 가운데가 마지막(셰이더)
+   그 밖: 바탕 기포는 소용돌이 동안 같이 돌고(약 63°) 뒤로는 천천히 돎. 화면에서는 0→10.45→0 으로 천천히 오감(21초 주기) */
+const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+// 키프레임 [[t, v0, v1, ...], ...] → 사이를 부드럽게 이음(범위 밖은 끝값 유지)
+const kf = (K, t) => {
+  if (t <= K[0][0]) return K[0].slice(1);
+  for (let i = 1; i < K.length; i++) if (t <= K[i][0]) { const a = K[i - 1], b = K[i], u = ss(a[0], b[0], t); return a.slice(1).map((x, j) => x + (b[j + 1] - x) * u); }
+  return K[K.length - 1].slice(1);
+};
+const K_SWIRL = [[0.25, -0.84, 0.10, 0.18], [1.0, -0.69, 0.18, 0.30], [1.5, -0.47, 0.0, 0.45], [2.5, -0.30, 0.05, 0.75], [3.5, -0.15, 0.0, 0.95]];   // 중심 x,y, 반지름
+const K_DRIP = [[0, 0.25, 0.82, 0.22, 0.12, 0.075], [1.0, 0.27, 0.80, 0.20, 0.30, 0.07], [2.0, 0.50, 0.72, 0.45, 0.45, 0.06], [3.0, 0.75, 0.55, 0.70, 0.40, 0.04]];   // 위 끝 x,y, 아래 끝 x,y, 굵기
+const K_LONG = [[0, 0.33, -0.18, 0.07, 1.6, -0.3], [1.0, 0.48, -0.24, 0.07, 2.2, -0.4], [2.0, 0.65, -0.30, 0.06, 2.5, -0.5], [2.75, 0.85, -0.22, 0.001, 2.5, -0.3]];   // x,y,r,길쭉함,각도
+// 공기주머니·물감 y는 방울이 기울어 화면에서 눌려 보이는 만큼 안쪽으로 당겨 둠(원본 화면 위치에 맞춤)
+const K_POCKET = [[3.9, 0.15, 0.66, 0.001, 2.0, 0], [4.5, 0.08, 0.68, 0.10, 2.4, 0], [5.5, -0.04, 0.67, 0.10, 2.4, 0.05], [6.0, 0.0, 0.66, 0.09, 2.6, 0.05], [6.5, 0.0, 0.64, 0.07, 3.0, 0], [7.0, -0.02, 0.63, 0.035, 4.0, 0], [7.5, -0.02, 0.63, 0.001, 4.0, 0]];
+const K_BLOB = [[4.4, 0.58, -0.52, 0.06, 0], [5.0, 0.64, -0.42, 0.13, 1], [5.5, 0.69, -0.30, 0.14, 1], [6.0, 0.67, -0.24, 0.14, 1], [6.5, 0.71, -0.26, 0.15, 1], [7.0, 0.45, -0.14, 0.11, 0.6], [7.5, 0.35, -0.10, 0.06, 0]];   // x,y,r,세기
+function params(t) {
+  const e = ss(0, DUR, t);
+  return {
+    t,
+    swirl: kf(K_SWIRL, t), swirlAmt: ss(0.1, 0.6, t) * (1 - ss(3.4, 4.6, t)),
+    drip: kf(K_DRIP, t), dripAmt: t < 3.4 ? 1 - ss(2.6, 3.4, t) : 0,
+    long: kf(K_LONG, t), pocket: kf(K_POCKET, t), blob: kf(K_BLOB, t),
+    rimFlow: ss(1.8, 2.5, t) * (1 - ss(4.8, 5.8, t)),
+    bubRot: 0.6 * ss(0.6, 4.6, t) + 0.25 * ss(4.6, DUR, t),
+    rotZ: THREE.MathUtils.degToRad(-10 * e), tiltY: 0.10 - 0.12 * ss(2, 6, t),
+    wob: 0.03 * Math.sin(t * 2.2) * (ss(0.5, 1.5, t) * (1 - ss(4, 6, t))),
+  };
+}
+function applyParams(P, swirlT) {
+  const d = jellies[0], u = d.material.uniforms;
+  u.uT.value = P.t;
+  u.uSwirlC.value.set(P.swirl[0], P.swirl[1]); u.uSwirlRad.value = P.swirl[2]; u.uSwirlAmt.value = P.swirlAmt; u.uSwirlT.value = swirlT;
+  u.uDrip.value.set(P.drip[0], P.drip[1], P.drip[2], P.drip[3]); u.uDripW.value = P.drip[4]; u.uDripAmt.value = P.dripAmt;
+  u.uBlob.value.set(...P.blob); u.uRimFlow.value = P.rimFlow;
+  // 바탕 기포: 원래 자리를 bubRot만큼 돌림 / 30·31칸: 움직이는 기포
+  const c = Math.cos(P.bubRot), s = Math.sin(P.bubRot);
+  BUBBLES.forEach((b, i) => { u.uBub.value[i].set(b[0] * c - b[1] * s, b[0] * s + b[1] * c, b[2], b[3]); u.uBubS.value[i].set(b[4], b[5] + P.bubRot); });
+  const L = P.long, K = P.pocket;
+  u.uBub.value[NB - 2].set(L[0], L[1], 0.02, L[2]); u.uBubS.value[NB - 2].set(L[3], L[4]);
+  u.uBub.value[NB - 1].set(K[0], K[1], 0.0, K[2]); u.uBubS.value[NB - 1].set(K[3], K[4]);
+  d.group.rotation.set(d.rotHome.x, P.tiltY, P.rotZ);
+  d.group.scale.set(1 + P.wob, 1 - P.wob, 1);
+}
+
+let pressing = false;
+renderer.domElement.addEventListener('pointerdown', () => pressing = true);
+addEventListener('pointerup', () => pressing = false);
+let clock = 0, last = 0;
+function frame(t, tl = null) {
+  shared.uTime.value = t;
+  const dt = Math.min(0.1, t - last); last = t; if (!pressing) clock += dt;
+  const tt = tl != null ? tl : FIXED_T != null ? FIXED_T : DUR * (0.5 - 0.5 * Math.cos(Math.PI * clock / DUR));
+  applyParams(params(tt), tl != null ? tl : FIXED_T != null ? FIXED_T : clock);
+  for (const j of jellies) {
+    j.group.updateMatrixWorld(true);
+    j.material.uniforms.uInv.value.copy(j.group.matrixWorld).invert();
+    if (j.clay) { j.clay.update(t); j.material.uniforms.uGrow.value = Math.cbrt(j.clay.state.shape.volume || 1); }
+  }
+  if (showHud) drawHud();
+  renderer.render(scene, camera);
+}
+window.__frame = frame; window.__params = params;
+
+if (REC) {
+  // 24fps × 10.45초 = 251장, 한 장씩 서버로
+  const list = q.get('rec') && q.get('rec') !== '1' ? q.get('rec').split(',').map(Number) : [...Array(NFR).keys()];   // ?rec=0,48,96 → 그 프레임만
+  for (const i of list) {
+    const t = i / 24; frame(t, t);
+    const blob = await new Promise(r => renderer.domElement.toBlob(r, 'image/png'));
+    await fetch('/frame/' + i, { method: 'POST', body: blob });
+  }
+  document.title = 'REC DONE';
+} else {
+  const loop = ms => { frame(ms / 1000); requestAnimationFrame(loop); };
+  requestAnimationFrame(loop);
+}
+</script>
+</body>
+</html>
