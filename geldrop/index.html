@@ -57,6 +57,43 @@ import { createSoundClay, SHAPES, VOICES, WAVES, FEEL_SCHEMA, RULES } from './so
    ?hud=1    → 패널·버튼 켠 채로 시작(기본은 꺼짐, H 키로 토글)
    ?rec=1    → 728×884, 24fps × 251장 프레임을 로컬 서버(/frame/N)로 보냄(영상 만들기용, 소리 꺼짐). ?rec=0,96 → 그 프레임만
    --------------------------------------------------------------- */
+/* ---------- 소리 잠금 풀기(모듈은 그대로, 바깥에서만) ----------
+   폰·임베드 창에서는 손짓 밖에서 만든 AudioContext가 'suspended'로 멈춰 있음 → 모듈이 만드는 모든 AudioContext를 기억했다가 터치·클릭 때마다 resume.
+   iOS는 무음 스위치가 켜져 있으면 Web Audio가 안 나옴 → 첫 터치에 무음 <audio>를 한 번 재생해 재생 모드로 바꿈.
+   임베드 창 보안 정책이 blob: 워크릿을 막으면 data: 주소로 다시 시도. 상태는 첫 터치 뒤 8초 동안 오른쪽 아래(H 자리)에 보임 */
+const AUDIO = { ctxs: new Set(), err: '' };
+{
+  const AC0 = window.AudioContext || window.webkitAudioContext;
+  if (AC0) {
+    window.AudioContext = class extends AC0 { constructor(...a) { super(...a); AUDIO.ctxs.add(this); if (this.state !== 'running') this.resume().catch(() => {}); } };
+    if (window.AudioWorklet) {
+      const addM = AudioWorklet.prototype.addModule;
+      AudioWorklet.prototype.addModule = async function (url, opt) {
+        try { return await addM.call(this, url, opt); }
+        catch (e) {
+          if (!String(url).startsWith('blob:')) { AUDIO.err = e.message; throw e; }
+          try { const txt = await (await fetch(url)).text(); return await addM.call(this, 'data:text/javascript;base64,' + btoa(unescape(encodeURIComponent(txt))), opt); }
+          catch (e2) { AUDIO.err = e2.message; throw e2; }
+        }
+      };
+    }
+  }
+  let silent = null, shownAt = 0;
+  const unlock = () => {
+    AUDIO.ctxs.forEach(c => { if (c.state !== 'running' && c.state !== 'closed') c.resume().catch(() => {}); });
+    if (!silent) {   // iOS 무음 스위치 우회: 아주 짧은 무음 wav 재생
+      silent = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=');
+      silent.setAttribute('playsinline', ''); silent.play().catch(() => {});
+      shownAt = performance.now();
+      const tick = () => { const el = document.getElementById('hkey'); if (!el) return;
+        if (performance.now() - shownAt > 8000) { el.textContent = 'H'; return; }
+        const st = [...AUDIO.ctxs].map(c => c.state).join(',') || '-';
+        el.textContent = 'H · 소리 ' + st + (AUDIO.err ? ' · ' + AUDIO.err.slice(0, 40) : ''); setTimeout(tick, 300); };
+      tick();
+    }
+  };
+  ['pointerdown', 'pointerup', 'touchstart', 'touchend', 'click', 'keydown'].forEach(t => addEventListener(t, unlock, { capture: true, passive: true }));
+}
 const q = new URLSearchParams(location.search);
 const REC = q.has('rec'), MUTE = q.has('mute') || REC;
 const FIXED_T = q.has('t') ? +q.get('t') : q.has('still') ? 0 : null;
