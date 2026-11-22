@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rainbow Blob</title>
+<style>
+  /* 레퍼런스(흰 회색 배경 위 무지갯빛 말랑한 유리 덩어리 하나, 약 8초 반복) 재현 화면 + 소리찰흙 모듈. 기본은 글자 없음, H 키로 패널·버튼 켜기 */
+  html,body{margin:0;height:100%;background:#ececec;overflow:hidden;font:11px/1.45 Inter,system-ui,sans-serif;color:#fff}
+  body{display:flex;align-items:center;justify-content:center}
+  #stage{position:relative}
+  canvas{display:block}
+  .off{display:none!important}
+  /* HUD: 03 index.html 의 MIX RATIO · SHAPE → VOICE 형식(흰 선·작은 글자) */
+  #hud{position:absolute;left:16px;top:16px;width:150px;pointer-events:none;mix-blend-mode:difference}
+  #hud h4{margin:12px 0 2px;font:600 13px/1 "Barlow Condensed",Inter,sans-serif;letter-spacing:.03em}
+  #hud .rule{height:1px;background:#fff;margin:4px 0 6px}
+  #hud .row{display:flex;justify-content:space-between;font-size:10px;margin-top:5px}
+  #hud .sub{font-size:8px;opacity:.7;margin-top:-1px}
+  #hud .bar{height:3px;background:#fff;margin-top:2px}
+  #hud .track{height:1px;background:#fff6;margin-top:-2px}
+  #ctl{position:absolute;left:12px;right:12px;bottom:10px;display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+  #ctl button,#ctl select{font:inherit;background:#0008;color:#fff;border:1px solid #fff5;border-radius:4px;padding:3px 8px;cursor:pointer}
+  #ctl select option{color:#000}
+  #hint{position:absolute;left:12px;right:12px;bottom:64px;font-size:10px;opacity:.85;mix-blend-mode:difference;pointer-events:none}
+  #hkey{position:absolute;right:10px;bottom:8px;font-size:10px;opacity:.3;color:#000;pointer-events:none}
+  #feel{position:absolute;right:12px;top:12px;width:250px;max-height:calc(100% - 70px);overflow:auto;background:#141110e8;border:1px solid #fff3;border-radius:8px;padding:10px 12px;z-index:50}
+  #feel label{display:block;margin:6px 0} #feel label div{display:flex;justify-content:space-between;opacity:.85}
+  #feel input[type=range]{width:100%}
+  #feel .bar{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+  #feel button,#feel input[type=text]{font:inherit;background:#0006;color:#fff;border:1px solid #fff4;border-radius:4px;padding:3px 6px}
+  #feel input[type=text]{width:100%;box-sizing:border-box;margin-bottom:4px}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="hud" class="off"></div>
+  <div id="hint" class="off">왼드래그 당기기 · Ctrl 드래그 홈 · 오른드래그(Shift) 문지르기: 천천히=SINE 왔다갔다=SQUARE 빠르게=WHITE 튕기기=NEEDLE 꾹=PINK · Alt 지우기 · 휠 찰흙 더하기/덜기 · F 브러시 크기 · Shift+F 세기 · Ctrl+Z / Ctrl+Shift+Z · 만진 덩어리는 계속 노래(■ 모두 멈춤) · 🎤·🎵(끌어다 놓기)는 덩어리가 들음 · H 숨기기</div>
+  <div id="ctl" class="off"></div>
+  <div id="feel" class="off"></div>
+  <div id="hkey">H</div>
+</div>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { MarchingCubes } from 'three/addons/objects/MarchingCubes.js';
+// 모듈 사본(원본·관리: ../../03_소리찰흙/작업/sound-clay.js — 여기서는 고치지 않음, 새 판은 다시 복사)
+import { createSoundClay, SHAPES, VOICES, WAVES, FEEL_SCHEMA, RULES } from './sound-clay.js';
+
+/* ---------------------------------------------------------------
+   옵션
+   ?mute=1   → 소리 계산만, 스피커 출력 없음(테스트는 항상 이걸로)
+   ?t=5      → 레퍼런스 타임라인(0~10.5초)의 그 순간에 멈춤(정지 비교용)
+   ?still=1  → 움직임 멈춤(t=0 모습)
+   ?hud=1    → 패널·버튼 켠 채로 시작(기본은 꺼짐, H 키로 토글)
+   ?u=uK0:0.4 → 재질 값 바꿔 보기(조율용)
+   ?rec=1    → 720×1280, 30fps × 315장 프레임을 로컬 서버(/frame/N)로 보냄(영상 만들기용, 소리 꺼짐). ?rec=0,30,60 → 그 프레임만(N = 초×30)
+   --------------------------------------------------------------- */
+/* ---------- 소리 잠금 풀기(모듈은 그대로, 바깥에서만) ----------
+   폰·임베드 창에서는 손짓 밖에서 만든 AudioContext가 'suspended'로 멈춰 있음 → 모듈이 만드는 모든 AudioContext를 기억했다가 터치·클릭 때마다 resume.
+   iOS는 무음 스위치가 켜져 있으면 Web Audio가 안 나옴 → 첫 터치에 무음 <audio>를 한 번 재생해 재생 모드로 바꿈.
+   임베드 창 보안 정책이 blob: 워크릿을 막으면 data: 주소로 다시 시도. 상태는 첫 터치 뒤 8초 동안 오른쪽 아래(H 자리)에 보임 */
+const AUDIO = { ctxs: new Set(), err: '' };
+{
+  const AC0 = window.AudioContext || window.webkitAudioContext;
+  if (AC0) {
+    window.AudioContext = class extends AC0 { constructor(...a) { super(...a); AUDIO.ctxs.add(this); if (this.state !== 'running') this.resume().catch(() => {}); } };
+    if (window.AudioWorklet) {
+      const addM = AudioWorklet.prototype.addModule;
+      AudioWorklet.prototype.addModule = async function (url, opt) {
+        try { return await addM.call(this, url, opt); }
+        catch (e) {
+          if (!String(url).startsWith('blob:')) { AUDIO.err = e.message; throw e; }
+          try { const txt = await (await fetch(url)).text(); return await addM.call(this, 'data:text/javascript;base64,' + btoa(unescape(encodeURIComponent(txt))), opt); }
+          catch (e2) { AUDIO.err = e2.message; throw e2; }
+        }
+      };
+    }
+  }
+  let silent = null, shownAt = 0;
+  const unlock = () => {
+    AUDIO.ctxs.forEach(c => { if (c.state !== 'running' && c.state !== 'closed') c.resume().catch(() => {}); });
+    if (!silent) {   // iOS 무음 스위치 우회: 아주 짧은 무음 wav 재생
+      silent = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=');
+      silent.setAttribute('playsinline', ''); silent.play().catch(() => {});
+      shownAt = performance.now();
+      const tick = () => { const el = document.getElementById('hkey'); if (!el) return;
+        if (performance.now() - shownAt > 8000) { el.textContent = 'H'; return; }
+        const st = [...AUDIO.ctxs].map(c => c.state).join(',') || '-';
+        el.textContent = 'H · 소리 ' + st + (AUDIO.err ? ' · ' + AUDIO.err.slice(0, 40) : ''); setTimeout(tick, 300); };
+      tick();
+    }
+  };
+  ['pointerdown', 'pointerup', 'touchstart', 'touchend', 'click', 'keydown'].forEach(t => addEventListener(t, unlock, { capture: true, passive: true }));
+}
+const q = new URLSearchParams(location.search);
+const REC = q.has('rec'), MUTE = q.has('mute') || REC;
+const FIXED_T = q.has('t') ? +q.get('t') : q.has('still') ? 0 : null;
+const DUR = 10.5, FPS = 30, NFR = 315;   // 원본 길이(초)·초당 장수·프레임 수
+const LOOP = 8.06;                        // 원본은 약 8.06초마다 같은 모습으로 돌아옴(30fps 프레임 차이가 가장 작은 주기)
+
+/* ---------- 프레임(원본 720×1280) ----------
+   덩어리 반지름(원본 평균 144.2px)을 월드 1.2(소리찰흙 모듈 기준 크기)로 맞추고 카메라 거리를 거꾸로 정함 */
+const VW = 720, VH = 1280, ASPECT = VW / VH, FOV = 26;
+const RPX = 144.18, R = 1.2, PX = R / RPX;                                           // 원본 1픽셀 = 월드 길이
+const H = VH * PX, W = H * ASPECT, CAMZ = H / 2 / Math.tan(THREE.MathUtils.degToRad(FOV / 2));
+const px2w = (x, y) => [(x / VW - 0.5) * W, (0.5 - y / VH) * H];
+
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: REC });
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;   // 셰이더가 화면 값을 직접 냄(원본 픽셀값 = 셰이더 값)
+stage.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(FOV, ASPECT, 0.1, 200);
+camera.position.set(0, 0, CAMZ);
+
+const shared = { uTime: { value: 0 }, uRes: { value: new THREE.Vector2(1, 1) }, uPh: { value: 0 } };
+function fit() {
+  let w, h;
+  if (REC) { w = VW; h = VH; renderer.setPixelRatio(1); }
+  else { h = Math.min(innerHeight, innerWidth / ASPECT); w = h * ASPECT; renderer.setPixelRatio(Math.min(2, devicePixelRatio) * Math.min(1, VH / (h * Math.min(2, devicePixelRatio)))); }
+  renderer.setSize(Math.round(w), Math.round(h));
+  stage.style.width = Math.round(w) + 'px'; stage.style.height = Math.round(h) + 'px';
+  shared.uRes.value.set(Math.round(w) * renderer.getPixelRatio(), Math.round(h) * renderer.getPixelRatio());
+}
+
+/* ---------- 공통 GLSL: 해시 · 3D 노이즈(반복 주기 LOOP로 도는 길) · 배경 ----------
+   배경은 원본에서 잰 평평한 밝은 회색(235~236). 글자(워터마크)는 뺌 */
+const GLSL = /* glsl */`
+  uniform float uTime, uPh; uniform vec2 uRes;
+  float hash(vec2 p){ p = fract(p*vec2(443.897,441.423)); p += dot(p, p.yx+19.19); return fract((p.x+p.y)*p.x); }
+  float hash3(vec3 p){ p = fract(p*0.3183099 + 0.1); p *= 17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }
+  float vn3(vec3 x){ vec3 i = floor(x), f = fract(x); f = f*f*f*(f*(f*6.0-15.0)+10.0);
+    return mix(mix(mix(hash3(i), hash3(i+vec3(1,0,0)), f.x), mix(hash3(i+vec3(0,1,0)), hash3(i+vec3(1,1,0)), f.x), f.y),
+               mix(mix(hash3(i+vec3(0,0,1)), hash3(i+vec3(1,0,1)), f.x), mix(hash3(i+vec3(0,1,1)), hash3(i+vec3(1,1,1)), f.x), f.y), f.z); }
+  // 반복하는 노이즈: 노이즈 공간에서 원을 따라 움직임 → uPh(0~1)가 한 바퀴 돌면 처음 모습
+  vec3 loopOff(float k, float rad){ float a = 6.2831853*(uPh*k); return vec3(cos(a), sin(a), 0.37*k)*rad; }
+  const vec3 BG = vec3(236.0/255.0);
+`;
+const GLSL_F = GLSL + /* glsl */`
+  vec3 grain(vec3 c){ float n = hash(gl_FragCoord.xy + fract(uTime*7.31)*vec2(91.7,53.3)) - 0.5; return c + n*0.012; }
+`;
+
+/* 배경: 화면 전체 삼각형 하나(깊이 맨 뒤) */
+const bgMesh = new THREE.Mesh(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3)),
+  new THREE.ShaderMaterial({ uniforms: shared, depthWrite: false, depthTest: false,
+    vertexShader: 'void main(){ gl_Position = vec4(position.xy, 0.9999, 1.0); }',
+    fragmentShader: GLSL_F + 'void main(){ vec2 uv = gl_FragCoord.xy/uRes; float vg = 1.0 - 0.012*dot(uv-0.5, uv-0.5)*4.0; gl_FragColor = vec4(grain(BG*vg), 1.0); }' }));
+bgMesh.frustumCulled = false; bgMesh.renderOrder = -1; scene.add(bgMesh);
+
+/* ---------- 실루엣 표(원본에서 잰 값) ----------
+   원본 영상 한 주기(0~8초)에서 겹친 장을 뺀 209장 × 64방향 윤곽 반지름 + 중심 이동. 바이트 = (반지름px − 90) × 3.4
+   (원본 프레임 이미지는 들어 있지 않고, 잰 숫자만 있음) */
+const SIL = {"n":209,"na":64,"mean":144.18,"t":[0,0.0667,0.1,0.1333,0.1667,0.2,0.2667,0.3,0.3333,0.3667,0.4,0.4667,0.5,0.5333,0.5667,0.6,0.6667,0.7,0.7333,0.7667,0.8,0.8667,0.9,0.9333,0.9667,1,1.0667,1.1,1.1333,1.1667,1.2,1.2667,1.3,1.3333,1.3667,1.4,1.4667,1.5,1.5333,1.5667,1.6,1.6667,1.7,1.7333,1.7667,1.8,1.8667,1.9,1.9333,1.9667,2,2.0667,2.1,2.1333,2.1667,2.2,2.2667,2.3,2.3333,2.3667,2.4,2.4667,2.5,2.5333,2.5667,2.6,2.6667,2.7,2.7333,2.7667,2.8,2.8667,2.9,2.9333,2.9667,3,3.0667,3.1,3.1333,3.1667,3.2,3.2667,3.3,3.3333,3.3667,3.4,3.4333,3.4667,3.5,3.5333,3.5667,3.6,3.6333,3.6667,3.7,3.7333,3.7667,3.8,3.8667,3.9,3.9333,3.9667,4,4.0667,4.1,4.1333,4.1667,4.2,4.2667,4.3,4.3333,4.3667,4.4,4.4667,4.5,4.5333,4.5667,4.6,4.6333,4.6667,4.7,4.7333,4.7667,4.8,4.8667,4.9,4.9333,4.9667,5,5.0667,5.1,5.1333,5.1667,5.2,5.2333,5.2667,5.3,5.3333,5.3667,5.4,5.4667,5.5,5.5333,5.5667,5.6,5.6667,5.7,5.7333,5.7667,5.8,5.8333,5.8667,5.9,5.9333,5.9667,6,6.0667,6.1,6.1333,6.1667,6.2,6.2667,6.3,6.3333,6.3667,6.4,6.4667,6.5,6.5333,6.5667,6.6,6.6333,6.6667,6.7,6.7333,6.7667,6.8,6.8667,6.9,6.9333,6.9667,7,7.0333,7.0667,7.1,7.1333,7.1667,7.2,7.2667,7.3,7.3333,7.3667,7.4,7.4667,7.5,7.5333,7.5667,7.6,7.6333,7.6667,7.7,7.7333,7.7667,7.8,7.8667,7.9,7.9333,7.9667,8],"b64":"l3Szu8LHy8nBtKignJudoKKjpq+7xcjDurGpo5+foaKjpKq3xtDQx7irn5OOkZuqu8jMysK4rKKcnJ+jqa2urKuuk3O4wMbJycS7raKdnZ+io6Oipa+6xMjFvbSspaGhoqOjo6m0ws7QyLyvopeRk56tvcjMyMC3rKGamp6jqq6wsLCzjnPAx8vLxr6ypZycoaaopqOipq+6xMjFvbStp6Ojo6KhoqawvsvQyr6wpJmTl6Kxv8nMxr60qJ2WlJmfp66xs7W5iXXIz9DNxrmqn5qco6qurqmlqLC7xMjGvrewqqalpqimo6Wuu8jOy8GzppuWmqa1xMzNycG3q52Vk5efpqyyuL7ChXjS1NHKv7KilpWeqrK3tKyoqrG7w8bEvriyrquqqqmnpaatusfPzcOzpJuZn6u5xc3OycK5raCXlJedo6y0vMPLgnza29PHuqqakZOfrrq/vLSurrO6wcTCv7q2s7GxsK+sqamuucbPzcGxopqZoK28ydDRy8S8sqWalZeco664wcrTf4Db2c/AsKGUjpOgr7zBwLu1s7W7wMPDwb68urm4t7SwqqmuuMXLyb+voJiZoq68ydLV0cnBtamgm5yfpbC9ydHXfYfb1sm6qpqPi5Ggsb/Hx8G7t7e6vb7AwsLDwsC/vbq1r6uutsHGxbqrnZWXoK26ydTY19LJvrGnoaCiqbTAzNXZfIzZ0cGvn5GHhpCitcXO0MzDvLm4ury+wMPGyMnHxcG7s62ttL3DwLanmpSVnam4yNbd3NjRx7quqKeqr7nF0NfafJHUybeklYuGiJOkuczX19HJwru3tbW4vsfNz8/OzMe/tq2qr7a8u7KlmZWXmqS0xNPd3tzWzcG3sbCxt8HL09fYfJXMvaubjoWEipirvs7Y29fPxr61sLG2vsjQ1dXV08/GurGsrLC1ta6kmpaWmqOxwtLd4+Lc08nAurq8wcjP1tfTfJfBs6OWj4qGi5mvxdLZ3dvVy7+1r66zvMjS2NvZ1tLJvbSvrK2vsKyjm5aWm6OwwdHd4+Pe18/Hw8PGy9DV1tLLfZe3qZyTj46OlKO2yNPa3d3YzsK2rqyxvMnT29za19PNw7iwrKurraynoJuZnKOuvs/c4+Pg2dLOy8rMztDT0c3EfZSuo5qSj5GTmam7y9fd4N/a0cW4rquvusfS2tza19TOxruwqaepra6sqaOgoaWvvs3Z4OHe29nW09HS1NbU0Me6e5GonZiYnJ2aoLLBy9Pa3t3a0se6r6qttsPP19nX1NPQyL2yqaOjqa6vramlpKixvsvV2tzb2NbV1dXV1tXSzMO3eY2knJiZnaGnr7vHztLW2drX0Ma7saustMHN1NTS0NDOyb+1raWjqbGzsa+urrC4wMjP09bW1NPU1tjZ2NfTyr2wd4icmJmgpqqwuMTMzs7P0dLSzse9s66utL/Kz9DPz87NysO5rqWiqbK5u7m2tLS4vcTKzc7Ozc/U19na2dbPxbenc4Odmp+psbW4v8bMy8jGx8vOzci/trCvtLzFysvLysrLycO5raOhqLO7v8C+urm7v8TGxsXGx8rO0tXX19LJv7Omb3+ZnKayur7CxsvMycXCwcPGyMbBurSytbvCxcfIycvMysO5rqWkqrW/w8LAv76/wsTDwb+/wcXL0tbW1NLLv6+haHuho6q1vsPGys7Mxb65uLq/xMXDvre0trq/w8TFxsjKyMK6sKejqbfDyMnIxMHBwsG+u7m3uL3FzNDS1dTMvbClY3WmqrO+xsrLzc/NxLixrqyxub2+vLq4ubu+wcLDxMbIxr6zqaOkq7jEy87LxsPCwr+5s6+trrW/xcrO0M/IvrOqX3Crr7rFzNDQzs7MwrOmn5+krLS4urm4u77Aw8fIxsbFv7atpKCksLzJ0NDNyMTBvrq1r6ilp622v8bKy8nEvbWuXmuzt7/Iz9LS09TPxLWlmZOXn6mwt7u8vL7AwsXIyMW/uK+loKKps8DO19fQycK/u7avqKKfoqmxuL/Cw8PBurWzYWm5v8fM0NHR0dLPx7qqnJORlJ2ps7q+wMLCxMbJycbBuKuhnqOtucjV3NrRyMG8t7GrpJ+dn6SttbzBw8K/u7i3aGbBxszQ0M/P0dPSy7+woZWNjZShrri+w8XGxsnMysO8s6een6mzwM/d5N/Vyb63sq2po52dn6Sqsrm/wsC9vLy+cGbGys7Q0dHPztDRzsS2qJuRjI6YqLfBxsnKycjIyMO4rKGcoay5x9bj5+LWyLyzrq2qp6Oio6ats7i8vb27urzBeGbKztLS0M/Ny83S1c/BsaSXjYuTpLXCy87OzczJxLyzqJ+coq+9zd7s7eXWxbmwraysq6qoqaqvtbi5ubi3uL3FgGrO0NHPzMjGxcnR1NHKva2dkYyRobXG0NPSzsjDv7ivo5qZo7PF1eTu7uTUw7SrqaywsrGxsrO1uLq2tLOztb7Ih2/R09DNycXBwMXP2NrSx7imlo6QoLbI1NnWz8fBurCmnZeYpbfJ2urz8eTTwrOqqa2yt7q6ubm6vLy4sa6utL/Ji3bQ0s7Kx8G6ucHP3eTh1MSzoZOTorrN2d3ZzsO7tKqgmZaap7nO4e3z8OPQvrCnp665wcTEw8PCwb+4sKqrs7/KjX7R0czFv7q2tr/P3ufm3Mu3pZmZp7/S3uDZzcG3raSalJScqr7S4+/18ePQvK6nqLC9yM3My8rIw764r6mqsr/LjIbQ0MzDurOvsr3P4e3t49K9rKKisMbY4uLYybuvpp+YlZegscPT4uzw7OHQva+pq7TBzNHRz87MycS6rqensb/Li5LR0szDubCtsbvM4O3v5dbEtKqrus/g5+PWxLSpoJqYmJ2ouMnZ5e3u6N3Pv7GssLrG0dfX1dLOycK5r6aptMHLi57V1c7Eu7OwsbrJ2+ru5tbGubK1xNfk6ODQv7GmnpqYmqKxwdLf5+rp49jLv7aztsDM1trb2dXPycO6sKqtt8LNiqrY2dPIvLSws73M2eLm4tbIv7u/zt3p6+DOu6ugm5qboau7zNnh5ebi3NPJvre3vcbR2d3c2NPNxr+3sK2wucbSirTd39jNwbaxsrnF093g29HGvr7H1uTs6d3ItKafnJ2gqLXG1d/l5uLd1c3Evrq7w8zW3d/d19DJw7qzr6+0v8zWirvd4NzTyL23tLrEzdTX1c7GwcLL2OXr59nFsaSenqGos8DN2eLl4dvUy8S/vLu/x9DZ39/b1szCu7WxsLS7xc3Wh77e4t/Wyb64tbrDys/RzcfBv8PN2eTo4tO+q6GeoKauusnW3+Pk4NfMwry5ur7Fzdbd39vWz8a7sqyssLW9yNDXhrze4uDb0cS6tLa8xMjJxsPAvsLK1d7h28y5qaCfpKqzv8vX4eTh2c/DurW0t73G0Nnd3dfQyL6zqaSlq7bCzNPYhbbc4uPc0cW6tba6vsHBv7+/vsHHz9bX0sSzpZ+gpa+6xdDX3eDe18u9s6+us7zH0tvd2NDIwLWpoJ6jrbnEztXXhK7a3uHc0MK5tbO1ubu9v8G+u7q+xczPyr6uoZygp7G9x8/V2tza0sW3rKepsbvI1d3c1Mm/tKiemZqgq7nGztHWhaXY3d3az8G3sa+xtLq/wMC+uba3u8HFwrmsoJqeqra/x8/T1tjX0cOypqKmr7zJ1NrXzsK4rJ+Wk5WcqbnHzs/SiJvT2dzZz8CzrKmorba+wsO/uLOwsre8u7OmnJmdprK+x8vP09TRzMCxpqKmsb7L1trUyLqtn5WPj5KZp7nGzM7PipLS1dfTyLquqKeqsLe/xcbBt66qq7C2trClmpWYo7C6wcXJzc/Pyr+xpqGlsL3J09bQw7OkmZGNjpGXo7PByMrNjYnL0dHLv7OooqOmrbnEysrDuK6npamusKyilpKWoKu2vsHDx8nLyL2wpqGlsL3K09XNvq6flY6Li4+Wo7K+xMXHjX7Gy8vEuKyioKGlrLbByszEt6qhnaGnqqaelpKVnaizur/Bw8PEwrmsop+jrrvHzs/IuqmdlIyIiY+WobC7vsDDjHPDxcS9saSdnaCkq7fEy8vDt6mdmJmfo6KdlpOVnamzt7m6vMDCvrWon52hqbbCysvDtqmelY2Kio6VoK64vb/AiWe/vru1qp2Wl5uhqrfEy8vDtaaZkpOYnZ6alZOXoauytri5ubm6t7CmnZqdp7K9xcbAtKigmJCNj5CUnqq0ury+iF6+v7iuopeSlZyjrLjEysnBtKWZkZCTmJqamJidpa+1uLi3tLKysaqim5eZoq24wMO/tKmjnZWRkJKVmqWxuLq7hFW9u7WrnpORk5qjrrvHy8e/s6SZkY6RlZiZmp6jq7S4t7e2s7CwrqihmpeZn6m0vL+8ta6ppJ2YlpSTmqayubu8gFC/vLWrnZKOkpymr7rEx8W9sqSak5CSlpmbnaKosLi8vbu2sKuqqqegmpeZnqawub++t7CtqaKcmJaUmKOwuby+fE7DwryvopeRlp+mrrnEx8S8sqadlpOUl5yfoqevtr3Cwbu1sKyrqqahnZiYnKSut7y+u7ezr6mhm5eWmaKwu8HDeU7Kxb2ypZiSlp+nrre/wb+5sqqjnZubnaGlqK21vMDCwb26tK2rq6iinZqYnKOtt76/vLm3tK+popqWmaOxvcXKdlHQzcW4qp6YmZ+mrra8vbu4s66qpqOjo6aprrS6v8PFwsC/urOuq6mmop2cn6aut77Bwb66uLOro5yXmqSyvsbNc1XU08zAtKqgnaKpsLe6ure1s7Gwrauqqquusre8wMTFxcPBvrevq6qopKGgpKu0usDExsTAvbiwpp2Ym6W0xM7Tc13X1c7Et6ujoaWssra3t7Sys7W2t7a0tLS0tbi7vb/AwcTFwLevra6sqaamqa63vsTHx8XDv7iwpp2Ym6a2xc7Vc2LZ2tXJvbKppKastLi4tbKxs7e7vLu6ubi3t7i6u77AwcTFwby0rq6urqysr7W7wcbJycfEwLmvpJyZm6Wzws3Vc2fZ2tbNwriwq6qvsrOyr62vtLzCxcTCv768uri2tbe6vcDBwLuyrrC0tLOytLm/xcfIx8XDv7iwpp2an6ezwMzVcmjX2tfTyb62sbCxsrKuqqistb/Hy8nGxMK9uri2tbe5ur2/v7q1tLe6u7m3uLu/xMfIx8bFwr21q6KfoqmzvsjQcGjV29zWz8W7tLGwsK6qpaatt8LLz8/Lx8O+uri2tLa4ury/vbi1t7vBw8G+vL3BxMfIx8TBwLy3sailqK60u8PNbmnS2Nzb1MzDvLe0sKyoo6OruMbQ1NPPycO/vLq5uLe3ubu8ubW0uMDGycbBvb7AxMbFw8HBwL25tK+sq6+0ub/Ja2rK1dvd29PGvbezsKymoqSuvcvU19XOxsG+vLy7urm4uLm4tra5v8bMzcrFwL6/w8XFw8G/vr68uri1tba2tbi/aG7E0Nnd3NTIv7m0sa2opaiwv83W19LKw7+9vr++vby8vLq3tbW3vsXMzsrFwL2+wMPEwr++vr/AwL+8ubi3tre7ZHG9ydPZ2tXKwLm1s66pp6u3xtLX1M3GwL28v8LEw8G+u7i1tLS2vsnP0c7HwLy8v8LDw8HAwMPExcbFv7u3s7G0YXe4w87W1tLJvba1tLGur7S/zNXX0ce+ubi7v8TGxsXBvbi0s7K1vcjOzcnDvru7v8LDwsHAwMLGysvKx8G4sa6wXH60vsnR083Dura2t7WztbzH0tbUy7+2srO5wMbIyMbDvrezsbCzu8XMzMnCvLu7vsHDw8HAwcPGys3NysS8tK+uWYSuuMPLzce+t7a3ury7vMTP19jTx7mvrK62wMjLzMrFvriysK+yusPIyMfDv7u8v8LFxcPBwMHFys3Oy8W9s6qpVYurs7vBxcK8tbS2u7/BxczX3drPvq+npqu2wcjMzMnDvbaxrq6wt7/FxsXCv72+wMPGxsXCwcHDx8zOzMa+tKuoUpKprra8v765tbW4vcHFy9La3tnLuaujoqm0v8fLy8fCvLaxrq2wtr3DxMPBv76/wcTGxsTCwcDAxMjKycW+tayoUZeqrbK4u7m2tba5v8XL0djf4NjItKafoKexvcXHxcG/u7axrq2vtr7Dx8jGxMLBwsXGx8XCv76+v8LGx8S/tq6qVpqnqq+2vL68uLi6v8bO19/j4NTCr6CanaaxusHEwr+8t7Ovra6xt7/Fx8jIx8bFxcbGxsXCvrq3uLzAxMTAurGqXpyqqa+6wcK/u7q7v8jR2eDj3tG/rJ6anqaxur/Avru4s7Cvr7C1vsbKzM3MysjGxMTEw8G/vLezsrW9xMXAurOuZp2prLXByMa/uba4vsbP2ODj3tC9qZyYnaaxur+/vLeyr6+usLS7xMvOz8/Ny8jGw8HBv769urSvrbC4wcbFvLKrb5ynr7vIz8zDurW1u8fS2d/h2826qJyZnqizvMHAvLawra2usbfAytLV1NPQzcjDwL69vby7urWuqay1wcbFv7SqdJyrtsTN0MzCuLOytsDN197e18q4qJ6boKm0vcLAurSwrKqssLjCzdba2dXQy8W/ure3ubq6urWvrK22wcjHv7Oqd5yvvcvT1M3Btq+vtLzH09zd1ci6rKOipq64wcbEvLWvqqipsLvH0trc2tXQysK7tbKxs7W4uLWxrbC5xs7Lv7Osd5u0xNLZ18y+sayrr7jE0NbX0ca7saqprLO8xMjHwrmxq6epsr/M2eDg3NbOxr61raqtsLS4uri0sbS/zNLOw7WucJi7zNfb18u7rqelqbPCzdPSzMS7tbKws7nAx8rIw7uyrKqrsb7P3OLh3NXNxLuxqaamqrG4u7y6uLrF1NrVxreya5TC0dze2cy6qqKhprLBys3LxsK+urm4ub3Eys3Mxry0rqmqsb3N3OPj3tbMwbaspaKjqbC3vcC/v8LN2+HZx7q5ZpPG093g2s26p5yao7PByMrHw8HCw8LAv8HHztPSy8G2rqipscDQ3uXj3dTLwbaqop+gpa62vcHDxMnV4eTby7y7YZLM2N/h28u3pZuao7LAxsbFwsLFyMnHxcbL0tfY0ca7saqpsL7P3uXk3tbMwbarop2epK22v8XIyM3Z5urfzcDBWpHN193d1se0pZyaorC+xcTBv8LHzMzJx8jM0trc1su+sqmmrLrM3OTj3tjPw7etpJ6fpK22v8XIytDc6ezhz8LEVI7P2N7d1MOwn5eaprO+xMPAv8LIzc3Kx8bK0djc2My9sKinrLrJ197g3dbNw7mvpqCfo6q0vMLGyM/c5+ndzMPGT4bR2Nva1cayoZmbpLK8wcC9vMDHy8vHxMPFy9TZ183As6qorrrI09rc19LMxLuxqaOho6mxusDDx8/a5OTXyMPHT3zP1dna08Sxopudp7W+v7y6u77DyMjDvru9xc7V1MzAtKyprrnG0tna1tDKw7uyqqWjpaqwtLi8wMnV3tzRxsPHUXDL09nZ1MaxoZufqbS7vbu5t7rAxsfCurW1vMbP0MvBta6utb7IzdLU0MvGwLmyramlpaisr7K0usPO1dbPyMXHUXDL09nZ1MaxoZufqbS7vbu5t7rAxsfCurW2vMbP0MvBta6utb7IzdLU0MvGwLmyramlpaisr7K0usPN1dbPyMXHVWLK0tnc1Ma1p6Kip7C4urm3tri8wcK9ta2ssrzGy8nCurW1ucDGys3OzcjDvrq2saypqKiqrKussrzI0dLMxsTFW1bGz9fb1si3qKGiqbO5uri0srS6vr23rqakqLO/xsbDv7y8v8THyMnIxsO/vLq4tbCsqainpaOkqrTCysrGwsLCZE7FzNbc2s+/r6amqrG2t7a0s7S4u7q0rKOeoKm1v8TDwcHBwsPExMPDw8PCv727uLSwq6ejoJ+gpK+8xcfEv72/bku/yNLZ2M2/tKyqr7S1tra1tLS5vr21qZ6ZmqOwvMLExMTFxsbFwr69vr+/v7+/vbmzrammop+dn6i0vMHBu7e5eE27xc7X2NHGurGws7a4uri2tbe7v7+3qZ2VlZ2rtr3CxsfIyMXAvbq5ur7DxcXDwr+6tK+sp6GdnKKtt72+uLS1eE27xc7X2NHGurGws7a4uri2tbe7v7+3qZ2VlZ2rtr3CxsfIyMXAvbq5ur7DxcXDwr+6tK+sp6GdnKKtt72+uLS1gVK7wszV2NPMwrm1tLa6u7q5urzAxMK5rJ6UlJyos7zCx8nIx8S/ubi6vL/Dx8nIx8W/urWxrKagm5+qs7i6uLW1ilm7wMjR1NLPyMC7uLi6urm6vMDFysnAsaGWlJqms7zCxsjIx8O8uLe5vsLGyMrLy8nGwry3saigm56ns7m6uLa3jmG6v8XL0NDNysW/vLq4uLi6vMLL0M/GtaSZl52qt8DGyMbEwb66t7e5vsXKzM3Pzs3LyMO8ta2knaCptby/vLm4kGe5u8DIzc/NysW/uLi7u7m6v8bO1dXLuqecm6Kuu8PHycbBvbq2tLW6vsPIy83Oz87MycjEu7GooqStuL7Bv7y5j222uLzCx8jIx8O+ura0tLS2vMbQ19fNvKufnaSyv8fJxsC6tbGvrrC0u8HHy8/S1NPRzMfCurGnoqSuuL6/vbu4jXG1trrCx8jIyMW/u7aysbG0u8bR2NnOvKqfnaa0wcfJxr+1rqmmpqiwucDGy8/U1tXSzMbBua+moKOstr29uri2iHS0t7q/wcTGxMK+ubSuq6uxu8XP1tbMvKufnqe0wMnLxrywpqCdn6Sstr7FzNHW2NfTy8S+t62inaGqs7m6uLSzfni1trvBxcbFwsHAvLWuqamuucXP1dPIuKien6i1wsnKxbqsn5iYnaSttLvCytHW2dnUzMW+tKmhnqGor7S2tba1cXq4vMHGyMXBvr/BvrWspqevu8bMz8zBs6WcnaazwMrLxbmrn5qcoKeus7rByM/X2tjSycC4r6afm56lrbK0s7O1ZX63vcHEx8XAvb/BwLmvqaqzvsXIyMS6raCZmqKwvsbIw7mtopyepKuyuLzCydDW2tnSx720qqCZl5qgpqyusLGyWIC7wcXIysW/vsLDwbu0rq+3wcfHxL6zp5yUlJ2tvMbJxLmroZ6iqK62vcLGy9DW2dfQxryxp5yUkpWboqeqrbC1T4G8xMjKyMO/vsHDwby1sbS9xcbCvbetopeRkpqntsLGwrisop6iqbG5wcbJz9PW19XOxbqupJmSj5KYn6apqqyzSX+/xsjIyMO9vcHExcK9ur3EysnBuLCnnZSOjpaksr3ExLyxpqGkrLW+xcrO0dTW1dPOxbqvpJiRjpKYnaKmq7C2SH/BxsnHw726u7u9wcPCwcTM0czBtKylnJOMjJSgr7zExLyyqaOkq7bByMvN0NHT1NHLw7qvpJiQjo+SmqSrsbW6Sn7Ex8bCvLaytLi9wsPDxMnR19LEtKmgmI+JiI6crbvExb2yqaSlrLfByMzNzs/Q0dDLw7qwpJmRjo6SnKWss7m/UXzIxcC7s62rqq+3v8LDx87V2dbJuqyimpOMio+cq7nDxL60q6aorrjDysvKysrKzM3Mx7+1qJuRjY6Vn6myub/FX3/GxL22raWhoaavt7zCyM/W29rQv66jm5SNjJGcq7rDxL2zqaSmrbfBxcXCwMHDxsrLycO6rqCVj5GYo7C4v8TGc4HMxbuwpp6YmKCnrrjAxszW3t7Wx7annZaRj5Kcq7nCxL61raemrba9wMC8urq7wMXKy8a9saOZlZWbp7O8xMnMiYXLxbmsoZaQkJagq7S5v8nS2t3Xy7qqoJuXlZmhrbjAwr20rainrLK2t7e0sbC1u8TLzcvCtqidmpygqrjByMzNnYfJv7SpnpWQj5OdqLC1usLN19rXz8CwpJ+cm52lsLrAwLy0rainq6+ysrCsqamut8HKz83Et6qhnZ6krrnCyc3NronKwLSpn5aRkJScpaywtbzI09jXz8S2qaSjoqSstr3Av7u0raqrrK+wrqumpKWqtL/L0tDHu6+mo6WqsbvCyM3Ou4nJwbesoZiTlJihqq6usLjEztPSzcW4rKipqq2zub/CwLu0r6uqq62sqqako6Wqs8DM0tDIvbKrp6mss7rBx8zNwIbJwrmtopqYmp6kqqysr7bAyc3NycK6sKusr7G3vsPCv7mzr6qoqaqqqaajo6WrtMDL0NDJv7Stqquus7nAxsvMwYXHwriupZ6cn6Wqra2rrbS8xMjGwr65s6+xtLi9wcTDvrexrKmpqaioqaalpqmutb7Hzc3HvrSvra2us7i8wcbIuoHHw720qaKhpKmusrKurLO7wcG/vLq3srG0uL3CxsfEvLWwq6inqKipqqurq62wtr/Gy8rEvLSura6xtLa4vMTIuoHHw720qaKhpKmusrKurLO7wcG/vLq3srG0uL3CxsfEvLWwq6ioqKipqqurq62wtr/Gy8nEvLSura6xtLa4vMTIsHzIxsG0pqOnqq6ytravq7G5vLu4t7WzsbK3u8DFycjFv7ewq6emp6iqra6xs7a3ub7Ex8a/uLOvr7Cyt7q7vMHGonjHxb61rKiqr7S5u7mxrLG5u7ezsrKxsbS6vsTLzsvFvLSuqaamp6mssLS5vL29vb/DxMK9ta6rq62zubu6ur/FkHLJxsK7saqttry/wb20sbW6ubWwra2tr7S7wcjNz87GvLOsqKenqKqts7i9wsTCwMDBwL66tbCtrK61vL26u8TJfW3MycG4rqqutr3AwLy2tbq9u7Suq6utr7S6v8fP0tDJv7Wtqaenqauvtr/FxsbFwsDAv765squop6y0ubu8wMjMa2fRzMO4sKywucHGxcC7vL+/urOsp6aoq7G3v8nS19bPxLmwqqeorLG1usDFyMnGwr++vbu4s62opqiwt7u+w8rQXWDTz8a8tLC0vsfLycTBwsO/uK+no6OnrK+1v8nT2tvVy76zrKqrsLW7v8XJy8vJxL+9vby6trCrqKmwt7zAx8/UVVjW0MW5srK6xM/U0szIx8bAtq2knp+kqKyzvcnW4OHb0cW6s6+vtLrAxcnJysvIw727u7u6t7Ovq6mttr7GzNPXUFHTzcS5s7S8ytXa2NPOy8W8sqihnp+jpqmuusnX4OPg2M3CubOzuL/Fy83MycfEvrq4ubu8u7iyrqyvt8DI0NbXUk3Ty8C3s7bBz9vf3dfPycK6saegnZ6go6ast8XU3+Tj3dPHvrq5vcPJzs7MycXBvLe0trm7vby4sq+wt7/I0djYWk3RyL20srfE1ODl49vSysG3rqeinZucnqKrtsLP3OXm4NfMw727v8bMz8/Lxb+6tbCvsra6vb68uLOyuMHK0dbWZFDLw7u1s7fC0t/m5t7TyL21rqijoJyamp2ksMDP2uHk4tnNw768v8bN0M/Jwrq1s66rrrS6v8LBvLe0uMDJ0NTSc1XGvrexsLXC0N3k5d/Sw7iwq6ilop2YlpqjrrvH1N/j4NjOxb+8wMbLzczHvrSsqaalqrC4wMXEwLq2uL/GzM/MgV3Bu7Wvr7S9ytfg4tvPwbSsqamqqaWemJmfq7nEztfd3dfOxb66vcPKzszFu7Cmo6Kip6+2v8bJxr+5ub7EyMrHjWW6squpq7G6x9La3dfMvbGrqquurqqim5mfqLK6xM/X2tTKwbq4u8HGyMnEu66koJ+gpq2zvMbLysO6uLu+wcLAlm63sqqmqK21wc3W2NPHuaylpqyxtLKro56fpq20vcfO0c7FvLWztbvCx8jEu66jnZ2fo6iwu8fNzMW9uLe6u7u6lm63sqqmqK21wc3W2NPHuaylpaqwtLKro56fpq20vcfO0c7FvLWztbvCx8jEu66jnZ2fo6iwu8fNzMW9uLe6u7u6mnOyrKekpaiyv8rR0s3CtaqlqK2ytrWup6Oipamutb7Gyse/t7CusrjAxsjGvrKlnZ6goqaut8LKy8W8trS1uLq4nHiwq6akpKewu8fQ083As6ikqK20urmzq6akp6iorLS8v764sKqorLS9xsvKw7epoJ6foaattsDIyMK6s7KysbKyon2uqaSipKmwu8bNz8zCtaqoq6+1u7u2r6qopqWjpKqzuLeyq6akqLK9ydDRyb2uop+ho6attLq/wb63r6qrrrCwpoGrqKSmqa20vMXNz8vCtq2rra+0ubq4s66rqKOenKCorq+sqKOjqbTAzdXVz8O0p6Kjp6uus7i8u7awq6mpra2rqIOnpqaprrC1vcXLz8zEurGurq6yubu6t7SxrKSalZeepamppqOjprC/z9nb1cm6rKanq6+wsrS1tLGspqanp6enqoSmp6mtsbO4vsTJzMzFu7Ovrqyts7i6uLe0rqWak5OZoaSmpqSjp7LB0dvd1sq9sausr7Gzs7GvraikoqGjpaenqYanqKyytbi8wMXJzMzHwLewq6iqsLa6u7u5s6ibkpKWnaOlpaOjp7PE093f2MzAtbGxtLW1s7CrqKakoqKjpqenpIeoqa61vb++wcbLzc7Lwreup6OmrbO3u7+/uKudlJGVnaSnp6alqrXG1t3c1crAuLS0t7i1sKumoqKkpqioqKmpn4iqrLG4vsDAwsbJzM7Lw7mupKCjqbC3vcLCu7GkmpeYnaOnqamoq7bF09va0cW8t7e6vLu3r6egnZ+ipquwr6yqmoarrbG5v7++wMPHysvLxbmrn5yfpq+2vcLEvrOnnpqdoqeqq6yrrrnI09fTyL63trrBxMK7sKWenaCnrrKzsa6skIivsLW7v7+/vsHGy83MxbmpnJmcpK+3vcPGw7ispKCip6yurq6usbnFztHLv7Wws7nBxsS6r6SdnKGpsba4trKvhIqsrrS5u7u6vL7BxcjIwrall5OZo623vsTGxLuxqaaoqq2wsbCwsrjEzMzDtqyorLXAx8W9saSdnKKrtb3BvrWueY2urbG2t7a1t7e7xMjGv7GglJGXoa22vsTGw721r62trrCxsK6usLe/xMK6raOfpbG9xcW9saijo6ewub/AvbiycY+sra6wrq6wsLK4vsHBu66ekpGYoq21vMLFw762sa6srK+wrqysrrS7wL+1ppyZn6u5wsO8s6unqa+4wMTCvLWucJGnq6+wrqqqrLC0ur+/t6qckpObprC3vcLEw7+4s6+sq62trKurrbK4vLmwo5iTmaa1v8K+ta6tsba8wcK+t6+ocJGnq6+wrqqqrLC0ur+/t6qckpObprC3vcLEw7+4s6+sq62trKurrbK4vLmwo5iTmaa1v8K+ta6tsba8wcK9ta6oc5GkrLGysa2rq66zt7q6taufmJifqbK4vcHCwr+5tLCtq6qqqaqsr7O5u7esnpOQlqOzv8TAu7i4ur7BwL25saeieZKiqrC0s7Gvr7Cys7S0squgnJ+mrra7v8DCwr65tK6qp6WmqKuvs7a5vLitnpOQlaKwvsXFwL/AwsPBvrmxqJ+ef5SgqK+0tra0srOzs7SzsKumpKettLi8vr+/vry3sa2po6Gjpqqwtrm8vrmuopmRkp6vvcXGx8jJycjDu7Cnn5uchpaepayzubu6uLa1s7GurKqqq66yuLy8vLy8vLi0sKqkoZ+foqmyur/Cw76zppuSkZurucLGys7Qz8vDuK6lnZmZjJaco6qxucDDv7y6trGura+ys7W5vLy7urm5t7Wzr6qkoJ6doqu0vMLGyMO5q5+UkZmot8TKzdLV0srAtKeemZeXkpSaoaiuuMLGxcO/urSvsLO1uLq7vLu3s7Ozs7Kxr6ujnJmcoqu3wcjMzsm+r6CUkJemtcDHztXX08i6rKGbmJWVlpGYn6avu8bNzMW+ubSxsbS5vL29u7eyraqsrq+wr6mjnZqboau4w8vR1dHFtKOVj5ShsL7I0NfX0cS2qqCZmJeVmI2WmqGtvMrQzsjBuLOytLm+wL66trGqpKSora+xsKqjnpuboau2wczW2tjMuaaXjpGbqbbBytDRzMKypZ+enZiVl4eYmqKwwdHY1c3Ct7Gxtbu+v7y2rqehnqClqq6xsa6qo5+epKy3w87X3dvQvqqZkI+XpLG8xc3OyLuto6Gjo5+akYOcnaSyw9Pb183AtrGwtLq+vLeupp6Zmp6kq7Czs7CsqKSjqbG6w83Z4uHVwayZjIqRnaq1wMfJwretpaOoq6miiYGko6u4x9bd2Mq8s66us7m6t7CnnZaWmZ2jq7G2uLezrqqrsLi+xtDa4N/VwquWiYWJlaGrtb7BvrWrqKmtsrGrf4Guq7C8ydba08a6s7K0t7m3sKebkY6RlpuhqbG2uLe1sa+xt7/GzdPZ3trOvKeUh4OHkJqkrre6uLGrqq+2uru1eIC3srS9ydTWz8G1sbO2uLu4rqCSi4yQlJmfpq+2ubi1tba4v8bM09nc3dfJtqGQhIGGjZWeqLC1s62oqbG7w8S/c4DFvbvBydDPxrqysLO1uLq1qZmOi4yPk5iepq61ubm5ubrAx87W2drc2tLDsZ+RhoOIj5aco6qtq6alqrTCzNDNcYLMxcHDyMvJw7ivrbK4vb21p5eOi42Pk5iepK21uLi4urzCy9Xc4N/c1cq7qZmNhoWIjpWbo6ippqOjqrXE0dbUc4PTy8jGxsfDu7OtrbO7v762qZuRjpCSlJmfpKyytri5ur/G0Nnf4eDc08Szo5iQjIuOkZWaoKSlpaGgqLTF1t3aeIXWz8jGxcK+ubKtq7C6wL+3q52UkZKUl5ugpqyxs7O0t7/I0tvi5uLYzL6uoJeTkZKWmpydoKKjoZ+fpLPH1tvaf4fX0cvHxMC7trKurbG6wcG4q5+Zl5eYnJ+jqK2wsK6usrvH1uHn5+HWx7mqoJuZmpyen6CgoKKioZ+epbTI2N7dhonU0M3Iw7+6s7CusLe/wsC4rKOdnZ6hpKWnq6+xrqqpr7vI1eDm5t/TxbWpoqGio6SlpKKioqKioZ+fprXJ19zajorSzczIwbq3trSxsra8wL62rKSho6apq6utsLGuqqeorrjE0Nvh4t3PwLOqp6irrrCuqKOhoaKioZ+fqLbG09nXjorSzczIwbq3trSxs7a8wL62rKSho6apq6utsLGuqqeorrjE0Nvh4tzPwLOqp6irrrCuqKOhoaKioZ+fqLbG09nXkozQzMvJxb63tbS1t7q/wL62raelqK2xsrOzs7OvqqakqrXD0Nnh4tnLvLGsrrK1uLeyqqWkpKWlo6KkqrjI1NjWk4rOy8rJxb+7t7a4vL29u7izrKiprrS5u7m4t7SwqqalqrXCzdbc29TIvLKusri8v722rqajpKepqqenrrvG0NXSj4nOyMbIxsK9uLW4u7u5t7OtqKertLu/wL68uravqaSjqbTBzNXa2dLHvLOxt73Bw8C3q6OfoaarrKurr7nFzdHSiIbLyMfHxb+6ubq7u7m3tK+pp6mutr7CwsC9urizq6WkqbK+ydLW0szDubS0ub/ExL+0qKKfoKivsrGwsrrCyc3NgYLGxMXGw766t7m7urazr6qnpamwusLHxsK/u7awqqSkqbG8xcvOzce/uLW2u8DDwbqwqKOio6qyt7e1tbe+xcnJe33HxsXDv7m1s7S3t7Sxrqqmp6u0vsXJyMO9ubWwq6elqbC7w8jLysS+uLW2ur/AvbWrpqSkpq22vLy5t7q+w8XGd3nFxsbFv7izr66ws7KurKqqqay1wMfLysW+uLOuqqemqK+5wcXEw8G9uLW2ury7tq6mo6OkqbO+w8K+u7q7vsHEd3TFxsbFv7atqqytrq6urayqqq62wMjNzMa/t7OwraqprLK3vMHDwr67uLe4u7y7tKqkoqOmrbbAxcXCvbu6ur7DeG/DxcbEwbqwqamrrK2ura6tq661vsbLy8a/uLKvraytrrG1u7/Bwb+7t7e5u7u4saminqClrrnFzc/Jv7e0trq/eW7DxcXFwrqwp6OkqKyvsbCurK61vMTKy8e/uLKwsbGwsrO0t7q+wcG9urm6vLy5saadmpyjr7zGzs/JwLm1trm+eW7DxcXFwrqwp6OkqKyvsbCurK61vMTKy8e/uLKwsbGwsrO1uLq+wcG9urm6vLy5saadmpyjrrzGzs/JwLm1trm+em7CxcXEwry0qaGiqKyvsrSzsK6yusLJy8jAuLSysrO1tLS0trm7vb+9u7q8v7+4rqScl5ihsL/L0dDJwLq4t7m+fHDGxsXDwLu0qqOip6yws7W0sK6wtr7FyMa/t7Sztbm5trS0tba5vb++vLy9vr65r6SblpihsMDL0M/Iv7q3uL3EfnbGxcTBvLeyq6WkqK+2u7y3s7GytrzDx8S9t7S0uLu9u7WwsLS4vb++vb2+v7+5rqKZlpqjr77M0s/KxL66u7/DgH7HyMO8t7WyrKioqq61u7u5tbK0uLzCxsS+uLa4vL+/u7WxsLG3v8HBwcHBwsC5raGZmaGqtcLO0s7Hwb28vL7CgojGx8S/uLOwraqqrLG3u7y6tbS3u7/DxsW/ube6v8LBvbWurLC3vsHAv8DCwsC5raKbnaSuusbP0s7Iw725u8HEgZHGx8XBvbezsLCwsbK0t7m4tbS2u7/Dx8W/ube6v8PDvrWuq620vMLEw8LCwsG5rJ+an6ixu8bP0s7Iwbu4ur3ChZvGxsO+uLSzsrGytLa3uLm4tbO0t7zCxcO9u7y+wcO/uLCqp6qzvsXGxsXFxsS7r6Ocn6awu8fP0czFvbe2uLzBiaPExcC6uLa2uLi6u7u6u7u5tbO0tri8wcG9urm8wsTAuLCqpqmyu8LHycjJy8i+sKSfn6Stt8PLzcnBubW0t7u/j6vBv7y2srK2u77Cw8G+vb67trKurbC1u7y6t7e7vr+7s6yopam0vcPHycvOz8zDtaifnaGosrzFx8O/u7aztry/l7C8urWysLK5wMTHyMbDwcG/urCqp6qvtLWzsrW6vby0rKinp6qzv8bJyszO0M7FuayhnJygqrW+wsG9uLSztbq9oa+4tbGurbC3wMnNzMjFwsPCurCnpKWprK6usLO3uLSuqaenqK21v8jLzc/S1dLJvbCknZygqLC3vLu2s7Kztbi6qq2zrqmmqLC6xczQ0MvFwsPCvLOpo6Kkpqipq6+ztLGqpaSnqrC4wMbKy8zP0dHLwrWonZmaoKmwtbWxr7C1ubm3sqewq6akqLC7yNHU0cvEwsPDvbOooZ+goaKlqK2wsKymoqOlqbG7wsXGyMnM0NHOxrutn5iYnaOqr7CurK2xtLSzuKCoo6OmqrK9yM/Qy8K+v8TEvrWqo5+enp6go6itrqmhnZ6iqbK6v8PFxcXIzM/Py8GypJuYmqGmqqqpqKqvsrKuupmno6OosLjByc7Nxb66vMLFwLaspKCdm5yfo6aqq6ijn6CmrrW6vr69urq/xs3QzcS3qqCam6CkpaWkpamusK+rupmno6OosLjByc7Nxb66vMLFwLaspKCdm5yfo6aqq6ijn6CmrrW6vr+9uru/xs3QzcS3qqCam6CkpaWkpamusK+ruZCjoqOosb3FzM7Kwbi0trzBwLiuqKOdmZicoaapq6mlo6Spsrq8u7q3s7O2vsbMzsm+saehn6CgoKGho6itrq6ptYmhoaWuuMDGysrDurKws7q/v7ivqKKempiaoKasraunpKeuuL+/vLavqqmttcHKzs3FuK2mo6OioJ+eoKWqraqktIWjpay1vsjNy8e+s6qprri+vriwrKegnJueoaarraqoqKy0u8HBurKro5+jrbrGztDKv7WuqqekoJybn6Sqraqls4Wjpay1vsjNy8e+s6qprri+vriwrKegnJueoaarraqoqKy0u8HBurKro5+jrbrGztDKv7WuqqekoJybn6Sqraqlr4Sjpq64wsvOzMS6raWkqrS6u7iyraqnop+foaeusa6srK+2v8TBua+mnJeao7G/y9DOxbuzrqqloJ2doKSoqKWjrYGjp665w8vPzMK0p6Cgpa63ube1s7Csp6Kgoqesrq2rrLC5w8nGu6+kmZGSnKu5xs7PycG5sqynop+eoaWpqaWiqn2kqrXAx8zMxrywo52do6uxtLa3uLezrKWio6aqrKuqq7C6xcvIvK+jl42NlaKzwszPysK6s6yno6Gio6aoqaWjp3qnrra/yM3Lw7eqn5maoKassLS5vb66squlo6Wnqampqq+6x87Lvq+kmI6LkJ2vwMzPy8S6saqloqKkpqeoqKWjoXiqsbrDy83IwLWnnpmZnaOprrO6wMG9ta2loqOlpqWmqbC7yNDPwrKlmY+KjpqsvsvPy8O6saijoqOkp6uurKinm3awtLzEycnEuq2im5qcn6OlqbG7wsXCua+noaCio6Okp666x9DOw7Wom5GMj5mpusfMycO6rqWfnJ+jqKyuraut"};
+const SILF = (() => {
+  const b = Uint8Array.from(atob(SIL.b64), c => c.charCodeAt(0)), st = SIL.na + 2;
+  return SIL.t.map((t, i) => ({ t, cx: (b[i * st] - 128) / 10, cy: (b[i * st + 1] - 128) / 10,
+    r: Array.from(b.subarray(i * st + 2, i * st + 2 + SIL.na), v => (v / 3.4 + 90) / SIL.mean) }));
+})();
+function silAt(ph) {                                   // 주기 안 시간 ph(초) → 64방향 배율·중심(px)
+  const F = SILF, n = F.length; let k = n - 1;
+  for (let i = 0; i < n - 1; i++) if (F[i + 1].t > ph) { k = i; break; }
+  const a = F[k], b = F[(k + 1) % n], tb = k + 1 < n ? b.t : LOOP, u = Math.min(1, Math.max(0, (ph - a.t) / Math.max(1e-4, tb - a.t)));
+  return { cx: a.cx + (b.cx - a.cx) * u, cy: a.cy + (b.cy - a.cy) * u, r: a.r.map((x, j) => x + (b.r[j] - x) * u) };
+}
+
+/* ---------- 덩어리에 비칠 스튜디오 환경(큐브맵) ----------
+   화면 배경은 흰 회색이지만, 원본처럼 덩어리에 비치고 굴절돼 보이는 환경에는 어두운 패널 몇 장과 밝은 소프트박스가 있음.
+   짙은 조각 = 휘어진 표면이 이 어두운 패널을 반사·굴절해서 보이는 것, 세로 띠 = 세로로 긴 소프트박스가 굴절돼 보이는 것.
+   환경 씬을 CubeCamera로 한 번 찍어 큐브맵으로 씀(셰이더가 반사·굴절 방향으로 읽음) */
+const ENV = (() => {
+  const es = new THREE.Scene();
+  const C = (r, g, b) => new THREE.Color().setRGB(r, g, b, THREE.LinearSRGBColorSpace);
+  const room = new THREE.Mesh(new THREE.SphereGeometry(60, 48, 24), new THREE.MeshBasicMaterial({ color: C(0.93, 0.93, 0.93), side: THREE.BackSide }));
+  es.add(room);
+  // 판 하나: [가로, 세로, 위치 x·y·z, 색, 이름]. 판은 늘 원점(덩어리)을 봄
+  const P = [
+    // 어두운 패널(짙은 남색·검정): 왼쪽 뒤·오른쪽 뒤 아래·아래·왼쪽 위
+    [14, 26, -17, -2, -6, C(0.02, 0.05, 0.07)],
+    [16, 16, 15, -10, -8, C(0.03, 0.06, 0.08)],
+    [10, 22, 20, -2, -14, C(0.03, 0.05, 0.07)],
+    [10, 10, -16, -12, 2, C(0.03, 0.05, 0.07)],
+    [40, 12, 0, -18, -4, C(0.04, 0.07, 0.09)],
+    [12, 10, -11, 13, -10, C(0.02, 0.04, 0.06)],
+    [10, 18, 18, 6, 6, C(0.05, 0.08, 0.10)],
+    // 밝은 소프트박스(세로로 긴 것 두 장 · 위 · 카메라 뒤 위)
+    [5, 30, -6, 0, -22, C(1.12, 1.12, 1.12)],
+    [5, 30, 7, 0, -22, C(1.08, 1.08, 1.08)],
+    [24, 5, 0, 20, -2, C(2.2, 2.2, 2.2)],
+    [16, 4, -4, 12, 18, C(2.0, 2.0, 2.0)],
+    [3, 14, 14, 2, 14, C(1.5, 1.5, 1.5)],
+  ];
+  for (const [w, h, x, y, z, col] of P) { const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: col, side: THREE.DoubleSide })); m.position.set(x, y, z); m.lookAt(0, 0, 0); es.add(m); }
+  const rt = new THREE.WebGLCubeRenderTarget(512, { type: THREE.HalfFloatType, generateMipmaps: false });
+  const cam = new THREE.CubeCamera(0.1, 200, rt);
+  return { es, rt, cam, render() { cam.update(renderer, es); } };
+})();
+
+/* ---------- 덩어리 재질 ----------
+   정점: (1) 원본 실루엣 표로 방향마다 단면을 늘리고 줄임 → 윤곽이 원본과 같은 자리에서 울퉁불퉁
+         (2) 앞·뒷면은 반복 노이즈로 실제로 굴곡지게 밀어냄(높이장) → 둘 다 합친 모양에서 법선을 다시 구함(차분)
+   조각: 투명한 유리 + 박막 간섭(물리 순서대로)
+     ① 앞면에서 굴절(R·G·B 굴절률 1.44/1.47/1.51, 분산) → 덩어리를 가로지르는 현(공 근사)으로 뒷면 점을 찾고 → 뒷면(노이즈로 굴곡)에서 다시 굴절해 나간 방향으로 환경 큐브맵을 읽음
+        (전반사면 안에서 튕긴 방향). 가장자리일수록 많이 꺾여 옆의 어두운 패널·소프트박스가 크게 휘어 비침
+     ② 박막: 광로차 2·n·d·cosθt(파장 10개 → RGB). 반사광은 박막 반사율 Rf로 물들고, 투과광은 1−Rf 쪽으로 물듦(보색)
+        막이 얇은 곳(접힌 곳)은 1차 간섭색(노랑·주황·빨강)
+     ③ 프레넬(Schlick)로 반사·투과를 나눔 */
+function makeBlobMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      ...shared,
+      uInv: { value: new THREE.Matrix4() }, uGrp: { value: new THREE.Matrix4() }, uR: { value: R }, uGrow: { value: 1 },
+      uSil: { value: new Array(64).fill(1) }, uSilAmt: { value: 1 },
+      uBump: { value: 0.10 }, uBumpF: { value: 1.25 },
+      uEnv: { value: ENV.rt.texture },
+      uD0: { value: 1068.0 }, uD1: { value: 152.0 }, uDn: { value: 90.0 }, uThin: { value: 0.6 }, uAbs: { value: 0.06 }, uK0: { value: 0.30 }, uK1: { value: 0.85 },
+      uKT: { value: 0.55 }, uKR: { value: 1.0 }, uF0: { value: 0.06 },
+      uNrm: { value: 0.09 }, uNrmF: { value: 3.0 }, uNbN: { value: 0.55 }, uZ: { value: 0.85 },
+    },
+    vertexShader: GLSL + /* glsl */`
+      uniform mat4 uInv, uGrp; uniform float uR, uGrow, uSil[64], uSilAmt, uBump, uBumpF;
+      varying vec3 vW, vN, vP;
+      float silR(float a){ float x = (a/6.2831853)*64.0; x = mod(x + 64.0, 64.0); int i = int(floor(x)); float f = fract(x);
+        int j = i + 1; if (j > 63) j = 0; return mix(uSil[i], uSil[j], f); }
+      // 쉬는 모양 위 점 g(덩어리 공간)와 쉬는 법선 n → 화면에 보이는 점
+      vec3 deform(vec3 g, vec3 n){
+        vec3 p = g / (uR*uGrow);
+        float a = atan(p.y, p.x);
+        float s = mix(1.0, silR(a), uSilAmt);
+        g.xy *= s;
+        float face = smoothstep(0.25, 0.85, abs(n.z));                     // 앞·뒷면만 굴곡(윤곽은 실루엣 표가 정함)
+        float h = vn3(p*uBumpF*2.0 + loopOff(1.0, 1.6) + (n.z < 0.0 ? 11.0 : 0.0))*0.7 + vn3(p*uBumpF*4.1 + loopOff(2.0, 1.2) + 5.0)*0.3 - 0.5;
+        g += n * h * uBump * uR * uGrow * face;
+        return g;
+      }
+      void main(){
+        vec4 wp = modelMatrix * vec4(position, 1.);
+        vec3 g = (uInv * wp).xyz;
+        vec3 n = normalize(mat3(uInv) * mat3(modelMatrix) * normal);
+        vec3 t1 = normalize(cross(n, abs(n.y) < 0.9 ? vec3(0,1,0) : vec3(1,0,0))), t2 = cross(n, t1);
+        float e = 0.012 * uR;
+        vec3 P0 = deform(g, n), P1 = deform(g + t1*e, n), P2 = deform(g + t2*e, n);
+        vec3 nn = normalize(cross(P1 - P0, P2 - P0)); if (dot(nn, n) < 0.0) nn = -nn;
+        vP = g / (uR*uGrow);
+        wp = uGrp * vec4(P0, 1.);
+        vW = wp.xyz; vN = normalize(mat3(uGrp) * nn);
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }`,
+    fragmentShader: GLSL_F + /* glsl */`
+      uniform mat4 uInv, uGrp; uniform samplerCube uEnv; uniform float uAbs, uD1, uK0, uK1, uD0, uDn, uThin, uKT, uKR, uF0, uNrm, uNrmF, uNbN, uZ;
+      varying vec3 vW, vN, vP;
+      // 박막 반사율(파장 10개 → RGB). 광로차 opd(nm), 사이 막의 위상 뒤집힘 포함(sin²)
+      vec3 film(float opd){
+        vec3 s = vec3(0.0), wsum = vec3(0.0);
+        for (int i = 0; i < 10; i++){
+          float l = 405.0 + float(i)*31.0;
+          vec3 w = vec3(exp(-pow((l-605.0)/48.0, 2.0)) + 0.18*exp(-pow((l-430.0)/22.0, 2.0)), exp(-pow((l-545.0)/45.0, 2.0)), exp(-pow((l-452.0)/34.0, 2.0)));
+          float r = sin(3.14159265*opd/l); s += w*r*r; wsum += w;
+        }
+        return s / wsum;
+      }
+      vec3 envS(vec3 d){ return textureCube(uEnv, d).rgb; }
+      void main(){
+        vec3 n = normalize(vN), v = normalize(vW - cameraPosition);
+        if (dot(n, v) > 0.0) n = -n;
+        // 법선 교란: 잔 굴곡 높이장(2옥타브, 반복 노이즈)의 기울기로 법선을 휨(가장자리일수록 셈)
+        { float ndv0 = clamp(-dot(n, v), 0.0, 1.0);
+          float amp = uNrm * mix(0.3, 1.0, smoothstep(0.8, 0.3, ndv0));
+          vec3 q = vP*uNrmF + loopOff(2.0, 1.5) + 40.0; float e = 0.04;
+          float h0 = vn3(q) + 0.5*vn3(q*2.1 + 3.0);
+          vec3 gr = vec3(vn3(q + vec3(e,0,0)) + 0.5*vn3((q + vec3(e,0,0))*2.1 + 3.0) - h0,
+                         vn3(q + vec3(0,e,0)) + 0.5*vn3((q + vec3(0,e,0))*2.1 + 3.0) - h0,
+                         vn3(q + vec3(0,0,e)) + 0.5*vn3((q + vec3(0,0,e))*2.1 + 3.0) - h0) / e;
+          gr -= n * dot(gr, n);
+          n = normalize(n - gr * amp); }
+        float ndv = clamp(-dot(n, v), 0.0, 1.0);
+        // ② 박막: 두께 d(nm) = 기본 + 표면에 붙은 얼룩(반복 노이즈). 접힌 곳(노이즈가 높은 가장자리)은 막이 얇아짐
+        float nz = vn3(vec3(vP.x*2.2, vP.y*0.9, vP.z*1.6) + loopOff(1.0, 0.9) + 3.0);
+        float thin = smoothstep(1.0 - uThin, 1.0 - uThin*0.4, vn3(vP*3.6 + loopOff(2.0, 1.4) + 31.0)) * smoothstep(0.7, 0.25, ndv) * (0.6 + 0.6*smoothstep(0.1, -0.8, vP.y));   // 아래쪽 가장자리에 더 많음
+        float sinT2 = (1.0 - ndv*ndv)/(1.33*1.33), cosT = sqrt(1.0 - sinT2);
+        // 두께 분포: 광로차가 정면 약 1075nm(보라·분홍) → 비스듬한 곳 약 1225nm(청록)가 되게, 두께가 가장자리로 갈수록 두꺼움(원본 반지름별 색에서 거꾸로)
+        float opdT = uD0 + uD1*smoothstep(0.98, 0.74, ndv) + uDn*(nz - 0.5)*2.0*smoothstep(0.5, 0.85, ndv) + (10.0 + 130.0*(vn3(vP*4.2 + loopOff(1.0, 1.1) + 83.0) - 0.5))*smoothstep(0.75, 0.3, ndv);   // 가장자리 두께 얼룩 → 청록·초록·파랑이 섞임
+        float d = mix(opdT / (2.0*1.33*cosT), 200.0, thin);
+        vec3 Rf = film(2.0*1.33*d*cosT);
+        // ① 굴절 두 번(채널마다): 앞면 굴절 → 공 근사 현으로 뒷면 점 → 뒷면 굴절
+        vec3 pS = vP / vec3(1.0, 1.0, uZ);                        // 덩어리 공간 단위 공 위의 점(앞뒤 두께 보정)
+        vec3 iors = vec3(1.42, 1.47, 1.54), T;
+        mat3 toObj = mat3(uInv), toW = mat3(uGrp);
+        for (int c = 0; c < 3; c++){
+          float io = iors[c];
+          vec3 t = refract(v, n, 1.0/io);
+          vec3 to = normalize(toObj * t);
+          float L = max(0.05, -2.0*dot(pS, to));
+          vec3 pe = pS + to*L;
+          vec3 nb = normalize(pe + uNbN*(vec3(vn3(pe*2.3 + loopOff(1.0, 1.3) + 61.0), vn3(pe*2.3 + loopOff(1.0, 1.3) + 67.0), vn3(pe*2.3 + 71.0)) - 0.5));
+          vec3 o = refract(to, -nb, io);
+          if (dot(o, o) < 1e-4) { vec3 r1 = reflect(to, -nb); o = refract(r1, normalize(-pe), io); if (dot(o, o) < 1e-4) o = r1; }   // 전반사: 안에서 한 번 튕겨 반대편으로
+          T[c] = envS(normalize(toW * o))[c] * exp(-uAbs*L);                                      // 유리를 지나는 길이만큼 조금 흡수
+        }
+        // ③ 프레넬: 반사는 박막색으로 물든 환경, 투과는 보색으로 물듦
+        float F = uF0 + (1.0 - uF0)*pow(1.0 - ndv, 5.0);
+        vec3 rf = reflect(v, n);
+        vec3 refl = envS(rf);
+        vec3 fc = Rf / max(max(Rf.r, Rf.g), max(Rf.b, 1e-3));                                        // 막 색의 색조
+        float k = mix(uK0, uK1, smoothstep(0.95, 0.5, ndv));
+        k = mix(k, 1.0, thin);
+        vec3 col = T * mix(vec3(1.0), fc, k) * (1.0 - F) + refl * (F + 0.35*thin) * mix(vec3(1.0), Rf*2.2, uKR);   // 투과광을 박막색으로 물들임(블렌더식 색 곱, 실제보다 과장)
+        gl_FragColor = vec4(grain(col), 1.0);
+      }`,
+  });
+}
+
+/* ---------- 거리함수(안쪽 음수, 월드 단위, 오브젝트 중심 기준) ----------
+   조금 납작한 공(앞뒤 두께 0.85배). 울퉁불퉁한 윤곽·앞면 굴곡은 재질의 정점 셰이더가 덧입힘 */
+function blobSDF(R) {
+  const rx = R, ry = R, rz = R * 0.85;
+  return (x, y, z) => {
+    const k0 = Math.hypot(x / rx, y / ry, z / rz), k1 = Math.hypot(x / (rx * rx), y / (ry * ry), z / (rz * rz));
+    return k1 < 1e-9 ? -rz : k0 * (k0 - 1) / k1;
+  };
+}
+
+/* ---------- 오브젝트(원본 픽셀에서 잰 배치) ----------
+   덩어리 중심 평균 (358.7, 639.8)px, 평균 반지름 144.2px(방향·시간에 따라 127~164px) */
+const LAYOUT = [
+  { name: 'blob', px: [358.7, 639.8], z: 0, voice: 'toy', note: 220.00,   // A3
+    sdf: blobSDF(R), grid: 76 },
+];
+/* 화음 모드(sound-clay 5-1절): 04~06과 같은 키(A 장화음 A·C#·E). 덩어리 하나가 A3을 맡음(toy가 2~3음을 흩어 쳐서 화음이 됨) */
+const KEY = { rootHz: 110, scale: 'chord' };
+
+const jellies = LAYOUT.map((L, i) => {
+  const material = makeBlobMaterial();
+  const group = new THREE.Group(); scene.add(group);
+  const [hx, hy] = px2w(...L.px);
+  const home = new THREE.Vector3(hx, hy, L.z);
+  group.position.copy(home);
+  return { name: L.name, index: i, group, material, home, voice: L.voice, note: L.note, sdf: L.sdf, grid: L.grid, clay: null };
+});
+window.__jellies = jellies; window.__cam = camera;
+// 조율용: ?u=uK0:0.4,uNbK:1 → 재질 값 바꿔 보기(비교 렌더할 때만 씀)
+if (q.get('u')) q.get('u').split(',').forEach(kv => { const [k, v] = kv.split(':'); const U = jellies[0].material.uniforms[k]; if (U) U.value = +v; });
+
+/* =================================================================
+   ▼▼▼ sound-clay 붙이는 자리 (HOOK) — 06 젤리 방울 화면과 같은 구조 ▼▼▼
+   ================================================================= */
+let FEEL = null;
+const FEEL_LS = 'soundclay.rainbowblob.feel.v1';
+function attachSoundClay(j) {
+  j.clay = createSoundClay({
+    THREE, MarchingCubes, parent: j.group, camera, canvas: renderer.domElement,
+    material: j.material,                                // 원본 재질(무지갯빛 유리 덩어리)이 마칭큐브 표면에 그대로
+    base: SHAPES.custom(j.sdf),                          // 실제 모양: 조금 납작한 공
+    voice: j.voice, mute: MUTE, feel: FEEL,
+    rotateOnEmptyDrag: false,
+    exclusiveVoice: false,                               // 만진 덩어리는 계속 노래 — 멈추기는 '모두 멈춤'
+    key: KEY, note: j.note,
+    rules: { grid: { resolution: j.grid } },
+    onFeelChange: f => { saveFeel(f); feelPanel && feelPanel.refresh(); },
+  });
+  return j.clay;
+}
+function saveFeel(f) { try { localStorage.setItem(FEEL_LS, JSON.stringify(f)); } catch (_) {} }
+/* ▲▲▲ HOOK 끝 ▲▲▲ */
+
+const clays = () => jellies.filter(d => d.clay).map(d => d.clay);
+const activeJ = () => jellies.find(d => d.clay && d.clay.active) || null;
+const targetJ = () => activeJ() || jellies[0];
+
+/* ---------- 컨트롤(H 키로 표시) ---------- */
+let feelPanel = null;
+function buildUI() {
+  const ctl = document.getElementById('ctl');
+  const btn = (label, fn) => { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; ctl.appendChild(b); return b; };
+  const sel = document.createElement('select');
+  VOICES.forEach(v => { const op = document.createElement('option'); op.value = v; op.textContent = '목소리: ' + v; sel.appendChild(op); });
+  sel.onchange = () => { const d = targetJ(); d.clay.setVoice(sel.value); d.voice = sel.value; };
+  ctl.appendChild(sel);
+  const snd = btn('🔊 소리', () => { const d = targetJ(); d.clay.state.playing ? d.clay.stop() : d.clay.start(); });
+  btn('■ 모두 멈춤', () => clays().forEach(c => c.state.playing && c.stop()));
+  let listener = null;
+  const micB = btn('🎤 내 목소리', async () => {
+    if (listener && listener.clay.listening === 'MIC') { listener.clay.stopListening(); listener = null; }
+    else { stopAllListening(); listener = targetJ(); listener.clay.activate();
+      try { await listener.clay.listen('mic'); } catch (e) { alert('마이크를 못 열었어(내장 브라우저 창에선 막힘 → 크롬 localhost로): ' + e.message); listener = null; } }
+    showListen(); });
+  const fileB = btn('🎵 음성 파일', () => { if (listener && listener.clay.listening === 'FILE') { listener.clay.stopListening(); listener = null; showListen(); } else afile.click(); });
+  const afile = document.createElement('input'); afile.type = 'file'; afile.accept = 'audio/*'; afile.style.display = 'none'; document.body.appendChild(afile);
+  const playFile = async f => { stopAllListening(); listener = targetJ(); listener.clay.activate();
+    try { await listener.clay.listen(f); } catch (e) { alert('음성 파일을 못 읽었어: ' + e.message); listener = null; } showListen(); };
+  afile.onchange = () => { if (afile.files[0]) playFile(afile.files[0]); afile.value = ''; };
+  addEventListener('dragover', e => e.preventDefault());
+  addEventListener('drop', e => { e.preventDefault(); const f = [...e.dataTransfer.files].find(x => x.type.startsWith('audio/') || /\.(wav|mp3|m4a|ogg|flac|webm)$/i.test(x.name)); if (f) playFile(f); });
+  function stopAllListening() { clays().forEach(c => c.listening && c.stopListening()); listener = null; }
+  function showListen() { const l = listener && listener.clay.listening;
+    micB.textContent = l === 'MIC' ? '⏹ 목소리 끄기 (' + listener.name + ')' : '🎤 내 목소리';
+    fileB.textContent = l === 'FILE' ? '⏹ 파일 끄기 (' + listener.name + ')' : '🎵 음성 파일'; }
+  const feelB = btn('감각', () => document.getElementById('feel').classList.toggle('off'));
+  btn('↺ 덩어리 초기화', () => targetJ().clay.reset());
+  feelPanel = buildFeelPanel(feelB);
+  return { sel, snd };
+}
+function buildFeelPanel(feelB) {
+  const fp = document.getElementById('feel');
+  fp.innerHTML = '<b style="font-size:12px">감각 프리셋 (덩어리)</b>';
+  const setAll = f => { clays().forEach(c => c.setFeel(f)); };
+  const cur = () => (jellies[0].clay).getFeel(nameIn.value || 'blob');
+  const rows = {};
+  const nameIn = document.createElement('input'); nameIn.type = 'text'; nameIn.value = (FEEL && FEEL.name) || '기본';
+  fp.appendChild(nameIn);
+  FEEL_SCHEMA.forEach(f => {
+    const row = document.createElement('label'), top = document.createElement('div'), name = document.createElement('span'), t = document.createElement('span');
+    name.textContent = f.label; const r = document.createElement('input'); r.type = 'range'; r.min = f.min; r.max = f.max; r.step = f.step;
+    const d = Math.max(0, -Math.floor(Math.log10(f.step)));
+    r.oninput = () => { setAll({ values: { [f.key]: +r.value } }); t.textContent = (+r.value).toFixed(d); saveFeel(cur()); };
+    top.append(name, t); row.append(top, r); fp.appendChild(row); rows[f.key] = { r, t, d };
+  });
+  const bar = document.createElement('div'); bar.className = 'bar'; fp.appendChild(bar);
+  const mkB = (label, fn) => { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; bar.appendChild(b); };
+  const refresh = () => { const v = jellies[0].clay.getFeel().values; for (const k in rows) { rows[k].r.value = v[k]; rows[k].t.textContent = (+v[k]).toFixed(rows[k].d); } };
+  mkB('복사', async () => { const s = JSON.stringify(cur(), null, 2); try { await navigator.clipboard.writeText(s); feelB.textContent = '감각 ✓복사'; setTimeout(() => feelB.textContent = '감각', 1200); } catch (_) { alert(s); } });
+  mkB('파일로 저장', () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(cur(), null, 2)], { type: 'application/json' })); a.download = `sound-clay-feel_${nameIn.value || 'blob'}.json`; a.click(); });
+  const fileIn = document.createElement('input'); fileIn.type = 'file'; fileIn.accept = '.json,application/json'; fileIn.style.display = 'none'; fp.appendChild(fileIn);
+  fileIn.onchange = async () => { const f = fileIn.files[0]; if (!f) return; try { const j = JSON.parse(await f.text()); setAll(j); if (j.name) nameIn.value = j.name; refresh(); saveFeel(cur()); } catch (e) { alert('프리셋을 읽지 못했어: ' + e.message); } fileIn.value = ''; };
+  mkB('불러오기', () => fileIn.click());
+  mkB('기본값', () => { const v = {}; FEEL_SCHEMA.forEach(f => v[f.key] = f.key === 'stiffness' ? RULES.pull.stiffness : f.key === 'spread' ? RULES.pull.spread : f.key.split('.').reduce((a, k) => a[k], RULES));
+    if (FEEL_DEFAULT) Object.assign(v, FEEL_DEFAULT.values); setAll({ values: v }); nameIn.value = '기본'; refresh(); saveFeel(cur()); });
+  refresh();
+  return { refresh };
+}
+
+/* ---------- HUD(H 키): 덩어리의 MIX RATIO · SHAPE → VOICE ---------- */
+const hudEl = document.getElementById('hud');
+hudEl.innerHTML = `<div id="hName" class="row" style="margin-top:0"></div>
+  <h4>MIX RATIO</h4><div id="hF0" class="sub"></div><div class="rule"></div>` +
+  WAVES.map((w, i) => `<div class="row"><span>${w}</span><span id="hp${i}"></span></div><div class="bar" id="hb${i}" style="width:0"></div><div class="track"></div>`).join('') +
+  `<h4>SHAPE → VOICE</h4><div class="rule"></div>` +
+  [['SIZE', 'PITCH'], ['STRETCH', 'GLIDE'], ['HORN', 'TRILL'], ['LEAN', 'VIBRATO'], ['FLAT', 'NOTE LEN'], ['VOLUME', 'RING']]
+    .map(([a, b], i) => `<div class="row"><span>${a}</span><span id="hs${i}"></span></div><div class="sub">→ ${b}</div>`).join('') +
+  `<div id="hTag" class="sub" style="margin-top:8px"></div>`;
+const $ = id => document.getElementById(id);
+function drawHud() {
+  const d = targetJ(); if (!d || !d.clay) return;
+  const c = d.clay, St = c.state, V = St.voice;
+  $('hName').innerHTML = `<span>${d.name.toUpperCase()} · ${c.voice.toUpperCase()}</span><span>${St.playing ? '♪' : (c.listening || '—')}</span>`;
+  $('hF0').textContent = St.f0 > 0 ? 'f0 ' + (St.f0 / 1000).toFixed(2) + ' kHz' : 'f0 — (no pitch)';
+  St.share.forEach((s, k) => { $('hp' + k).textContent = (s * 100).toFixed(s < 0.1 && s > 0 ? 1 : 0) + '%'; $('hb' + k).style.width = (100 * s).toFixed(1) + '%'; });
+  const v = [V.pitch, V.sweep, V.rate, V.vib, V.dur, V.ring];
+  v.forEach((x, i) => $('hs' + i).textContent = i === 3 ? '±' + x.toFixed(0) + 'Hz' : i === 5 ? (x * 100).toFixed(0) + '%' : '×' + x.toFixed(2));
+  $('hTag').textContent = St.tag + ' · undo ' + c.history.undo;
+  if (ui) { ui.sel.value = c.voice; ui.snd.textContent = St.playing ? '🔇 소리 끄기' : '🔊 소리'; }
+}
+let showHud = q.has('hud');
+const setHud = on => { showHud = on; ['hud', 'ctl', 'hint'].forEach(id => $(id).classList.toggle('off', !on)); if (!on) $('feel').classList.add('off'); };
+addEventListener('keydown', e => { if ((e.key === 'h' || e.key === 'H') && !e.ctrlKey && !e.metaKey && !e.altKey && e.target.tagName !== 'INPUT') setHud(!showHud); });
+
+/* ---------- 시작 ---------- */
+let FEEL_DEFAULT = null, ui = null;
+fit(); addEventListener('resize', fit);
+ENV.render();   // 스튜디오 환경 큐브맵 한 번 찍기
+try { FEEL_DEFAULT = await (await fetch('./feel/기본.json')).json(); } catch (_) {}
+try { const s = localStorage.getItem(FEEL_LS); FEEL = s ? JSON.parse(s) : FEEL_DEFAULT; } catch (_) { FEEL = FEEL_DEFAULT; }
+jellies.forEach(attachSoundClay);
+ui = buildUI(); setHud(showHud && !REC);
+if (REC) $('hkey').classList.add('off');
+window.__clays = clays();
+
+/* ---------- 타임라인 ----------
+   원본은 컷 없이 약 8.06초마다 같은 모습으로 돌아오는 반복(8.06초 뒤 10.5초까지는 처음 2.4초가 다시 나옴).
+   흐름은 하나: 덩어리가 제자리에서 계속 말랑하게 꿀렁임(윤곽 혹 5~7개가 생기고 사라짐, 앞면 굴곡과 색 얼룩이 같이 흐름).
+   → 주기 안 시간 ph = t mod 8.06 하나로 실루엣 표·노이즈 위상(uPh = ph/8.06)을 같이 돌림 */
+function applyPhase(t) {
+  const d = jellies[0], u = d.material.uniforms;
+  const ph = ((t % LOOP) + LOOP) % LOOP;
+  shared.uPh.value = ph / LOOP;
+  const S = silAt(ph);
+  for (let i = 0; i < 64; i++) u.uSil.value[i] = S.r[i];
+  d.group.position.set(d.home.x + S.cx * PX, d.home.y - S.cy * PX, d.home.z);
+}
+
+let pressing = false;
+renderer.domElement.addEventListener('pointerdown', () => pressing = true);
+addEventListener('pointerup', () => pressing = false);
+let clock = 0, last = 0;
+function frame(t, tl = null) {
+  shared.uTime.value = t;
+  const dt = Math.min(0.1, t - last); last = t; if (!pressing) clock += dt;
+  applyPhase(tl != null ? tl : FIXED_T != null ? FIXED_T : clock);
+  for (const j of jellies) {
+    j.group.updateMatrixWorld(true);
+    j.material.uniforms.uInv.value.copy(j.group.matrixWorld).invert();
+    j.material.uniforms.uGrp.value.copy(j.group.matrixWorld);
+    if (j.clay) { j.clay.update(t); j.material.uniforms.uGrow.value = Math.cbrt(j.clay.state.shape.volume || 1); }
+  }
+  if (showHud) drawHud();
+  renderer.render(scene, camera);
+}
+window.__frame = frame; window.__silAt = silAt;
+
+if (REC) {
+  // 30fps × 10.5초 = 315장, 한 장씩 서버로
+  const list = q.get('rec') && q.get('rec') !== '1' ? q.get('rec').split(',').map(Number) : [...Array(NFR).keys()];
+  for (const i of list) {
+    const t = i / FPS; frame(t, t);
+    const blob = await new Promise(r => renderer.domElement.toBlob(r, 'image/png'));
+    await fetch('/frame/' + i, { method: 'POST', body: blob });
+  }
+  document.title = 'REC DONE';
+} else {
+  const loop = ms => { frame(ms / 1000); requestAnimationFrame(loop); };
+  requestAnimationFrame(loop);
+}
+</script>
+</body>
+</html>
