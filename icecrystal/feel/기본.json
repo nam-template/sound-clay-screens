@@ -1,0 +1,27 @@
+{
+  "type": "sound-clay-feel",
+  "version": 1,
+  "name": "기본",
+  "values": {
+    "stiffness": 0.8,
+    "spread": 0.6,
+    "pull.lag": 0.45,
+    "pull.grow": 0.4,
+    "pull.maxLen": 1.2,
+    "pull.inset": 0.3,
+    "pull.neck0": 0.3,
+    "pull.end0": 0.34,
+    "pull.kNeck": 0.35,
+    "pull.kEnd": 0.3,
+    "motion.wobble": 0.03,
+    "motion.react": 1,
+    "volume.wheel": 0.0012,
+    "pull.counter": 0.8,
+    "listen.loudVol": 1.3,
+    "listen.pitchStretch": 1.2,
+    "listen.texGain": 2,
+    "listen.dbCeil": -22,
+    "brush.size": 1,
+    "brush.strength": 1
+  }
+}

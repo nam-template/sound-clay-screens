@@ -128,9 +128,14 @@ const VOICE_WORKLET = `
 const SC=[1,1.125,1.26,1.335,1.5,1.68];
 const BIRD_ORDER=['WHISTLE','WARBLE','TRILL','WHISTLE','CHIRP','WARBLE','WHISTLE','TRILL'];
 class Voice extends AudioWorkletProcessor{
-  constructor(opt){super();this.P={voice:'bird',pitch:1,sweep:1,rate:1,vib:0,dur:1,legato:0,T:[0,0,0,0]};this.port.onmessage=e=>{const d=e.data;   // 키가 바뀌면 표시 → process에서 예약음 다시 잡기
-      if(d&&('key' in d)&&JSON.stringify(d.key||null)!==JSON.stringify(this.P.key||null))this.keyChange=true;Object.assign(this.P,d);};
-    if(opt&&opt.processorOptions)Object.assign(this.P,opt.processorOptions);   // 만들 때 받은 목소리·키·맡은 음으로 첫 소리부터 맞게
+  constructor(opt){super();this.P={voice:'bird',pitch:1,sweep:1,rate:1,vib:0,dur:1,legato:0,T:[0,0,0,0]};this.port.onmessage=e=>{let d=e.data;   // 키가 바뀌면 표시 → process에서 예약음 다시 잡기
+      if(d&&('key' in d)&&JSON.stringify(d.key||null)!==JSON.stringify(this.P.key||null))this.keyChange=true;
+      // 공통 박 기준 보정: clock(보낸 순간의 벽시계)과 clockCtx(보낸 순간의 오디오 시각)로 '이 워크릿 t=0의 벽시계'를 계산 → 메시지가 늦게 와도 박이 안 밀림
+      if(d&&d.clockCtx!=null&&d.clock!=null){d={...d,clock:d.clock+((typeof currentTime==='number'?currentTime:d.clockCtx)-this.t-d.clockCtx)};delete d.clockCtx;
+        this.notes=this.notes.filter(n=>n.t<=this.t);this.next=Math.min(this.next,this.t);}   // 기준이 오기 전에 잡아 둔 아직 안 친 음은 버리고 새 기준으로 다시 잡음
+      Object.assign(this.P,d);};
+    if(opt&&opt.processorOptions)Object.assign(this.P,opt.processorOptions);
+    if(this.P.clockCtx!=null&&this.P.clock!=null){this.P.clock+=((typeof currentTime==='number'?currentTime:this.P.clockCtx)-this.P.clockCtx);delete this.P.clockCtx;}   // 만들 때부터 공통 박 기준(t=0의 벽시계) → 첫 음부터 박 위   // 만들 때 받은 목소리·키·맡은 음으로 첫 소리부터 맞게
     this.t=0;this.next=0.15;this.notes=[];this.seed=99;this.oi=0;this.b=[0,0,0,0,0,0,0];this.b2=[0,0,0,0,0,0,0];
     this.e=[0,0,0,0,0];this.s2=0;this.d2=0;this.pk=0;this.prev=0;this.n=0;this.f=0;this.tag='REST';this.lp=0;}
   rnd(){this.seed=(this.seed*1664525+1013904223)>>>0;return this.seed/4294967296*2-1;}
@@ -526,9 +531,9 @@ export function createSoundClay(o) {
     const ac = new AudioContext();
     await ac.audioWorklet.addModule(URL.createObjectURL(new Blob([VOICE_WORKLET], { type: 'text/javascript' })));
     // 첫 소리부터 맞는 목소리로: 만들 때 목소리·키·맡은 음·형태 값·질감을 함께 넘김(예전엔 첫 mix 전까지 기본값 bird가 한 번 울렸음)
-    const node = new AudioWorkletNode(ac, 'sound-clay-voice', { outputChannelCount: [1], processorOptions: { voice, ...state.voice, T: state.texture, key: keyInfo(), note, level } });
+    const node = new AudioWorkletNode(ac, 'sound-clay-voice', { outputChannelCount: [1], processorOptions: { voice, ...state.voice, T: state.texture, key: keyInfo(), note, level, clock: (performance.now() - group.clock) / 1000, clockCtx: ac.currentTime, bpm: o.bpm || R.toy.bpm, density: R.toy.density, lp: R.toy.lp } });
     // 이 워크릿의 시간 0이 공통 시계에서 몇 초 뒤인지 → 다른 오브젝트와 같은 박에 침
-    node.port.postMessage({ clock: (performance.now() - group.clock) / 1000, bpm: o.bpm || R.toy.bpm, density: R.toy.density, lp: R.toy.lp });
+    node.port.postMessage({ clock: (performance.now() - group.clock) / 1000, clockCtx: ac.currentTime, bpm: o.bpm || R.toy.bpm, density: R.toy.density, lp: R.toy.lp });
     const space = makeSpace(ac, R.bird.master); node.connect(space.inp);
     node.port.onmessage = e => { Object.assign(state, e.data); o.onChange && o.onChange(state); };
     bird = { ac, node, space }; mix();
