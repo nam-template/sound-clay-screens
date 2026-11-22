@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sound Clay Mix</title>
+<link rel="icon" href="data:,">
+<style>
+:root{--bg:#dedede;--card:#fff;--ink:#111;--sub:#555;--line:#c9c9c9;--on:#111;--onInk:#fff}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,sans-serif}
+body{display:flex;flex-direction:column}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--bg)}
+header h1{font-size:16px;margin:0 8px 0 0;white-space:nowrap}
+header a.home{color:var(--sub);font-size:13px;text-decoration:none;margin-right:4px}
+.chip{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:999px;padding:7px 12px;font-size:13px;font-weight:600;cursor:pointer;user-select:none}
+.chip[aria-pressed="true"]{background:var(--on);color:var(--onInk);border-color:var(--on)}
+.chip:disabled{opacity:.35;cursor:default}
+.sep{width:1px;height:22px;background:var(--line);margin:0 4px}
+.hint{font-size:12px;color:var(--sub);flex-basis:100%}
+#stage{flex:1;display:grid;gap:2px;background:#000;min-height:0}
+.pane{position:relative;min-width:0;min-height:0;background:#111}
+.pane iframe{position:absolute;inset:0;width:100%;height:100%;border:0;display:block}
+.pane .tag{position:absolute;left:8px;top:8px;z-index:2;display:flex;gap:6px;align-items:center;background:rgba(0,0,0,.55);color:#fff;border-radius:999px;padding:4px 6px 4px 10px;font-size:12px;font-weight:600;pointer-events:auto}
+.pane .tag button{border:0;background:rgba(255,255,255,.2);color:#fff;border-radius:999px;width:22px;height:22px;cursor:pointer;font-size:13px;line-height:22px;padding:0}
+#empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--sub);font-size:15px;padding:24px;text-align:center}
+</style></head>
+<body>
+<header>
+  <a class="home" href="../">← 목록</a>
+  <h1>조합</h1>
+  <span id="picks"></span>
+  <button class="chip" id="chordA" aria-pressed="true">코드 A 고정</button>
+  <button class="chip" id="chordP" aria-pressed="false">코드 진행 A→F#m→D→E</button>
+  <div class="hint">화면을 2~4개 골라. 모두 같은 박(66BPM)·같은 코드로 울려서, 여러 화면을 같이 만져도 화음이 돼. 각 화면은 처음 한 번 만져야 소리가 켜져.</div>
+</header>
+<div id="stage"></div>
+<div id="empty">위에서 화면을 골라 줘.</div>
+<script>
+const SCREENS = [
+  ['softmatter', 'Soft Matter 08'], ['glassdrops', 'Glass Drops'], ['inkjelly', 'Ink Jelly'],
+  ['geldrop', 'Gel Drop'], ['foamcells', 'Foam Cells'], ['rainbowblob', 'Rainbow Blob'],
+];
+const MAX = 4;
+const q = new URLSearchParams(location.search);
+let sel = (q.get('s') || '').split(',').filter(id => SCREENS.some(s => s[0] === id)).slice(0, MAX);
+let chord = q.get('chord') === 'prog' ? 'prog' : 'A';
+const $ = id => document.getElementById(id), picks = $('picks'), stage = $('stage');
+const frames = new Map();   // id → pane (이미 연 화면은 다시 만들지 않음 → 고르기를 바꿔도 소리가 끊기지 않음)
+
+function save() {
+  const p = new URLSearchParams(); if (sel.length) p.set('s', sel.join(',')); if (chord === 'prog') p.set('chord', 'prog'); if (q.has('mute')) p.set('mute', '1');
+  history.replaceState(null, '', p.toString() ? '?' + p : location.pathname);
+}
+function pane(id) {
+  if (frames.has(id)) return frames.get(id);
+  const name = SCREENS.find(s => s[0] === id)[1];
+  const el = document.createElement('div'); el.className = 'pane';
+  const f = document.createElement('iframe');
+  f.src = `../${id}/?mix=${chord}` + (q.has('mute') ? '&mute=1' : '');   // ?mute=1 → 화면들도 무음(검증용) f.title = name; f.allow = 'autoplay; microphone';
+  const tag = document.createElement('div'); tag.className = 'tag';
+  tag.append(name); const x = document.createElement('button'); x.textContent = '×'; x.title = '빼기';
+  x.onclick = () => toggle(id); tag.append(x);
+  el.append(f, tag); frames.set(id, el); return el;
+}
+function layout() {
+  const n = sel.length, wide = innerWidth >= innerHeight;
+  const cols = n <= 1 ? 1 : n === 2 ? (wide ? 2 : 1) : n === 3 ? (wide ? 3 : 1) : 2;
+  stage.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  stage.style.gridAutoRows = '1fr';
+}
+function render() {
+  picks.replaceChildren(...SCREENS.map(([id, name]) => {
+    const b = document.createElement('button'); b.className = 'chip'; b.textContent = name;
+    const on = sel.includes(id); b.setAttribute('aria-pressed', on);
+    b.disabled = !on && sel.length >= MAX; b.onclick = () => toggle(id); return b;
+  }));
+  for (const [id, el] of frames) if (!sel.includes(id)) { el.remove(); frames.delete(id); }   // 뺀 화면은 닫음(소리도 멈춤)
+  for (const id of sel) { const el = pane(id); if (el.parentNode !== stage) stage.append(el); }   // 새로 고른 것만 붙임(iframe은 옮기면 다시 로드되니까 기존 것은 그대로 둠)
+  $('empty').style.display = sel.length ? 'none' : 'flex'; stage.style.display = sel.length ? 'grid' : 'none';
+  $('chordA').setAttribute('aria-pressed', chord === 'A'); $('chordP').setAttribute('aria-pressed', chord === 'prog');
+  layout(); save();
+}
+function toggle(id) { sel = sel.includes(id) ? sel.filter(s => s !== id) : [...sel, id].slice(0, MAX); render(); }
+function setChord(c) { if (c === chord) return; chord = c; for (const el of frames.values()) el.remove(); frames.clear(); render(); }   // 코드 방식이 바뀌면 화면을 새로 열어 적용
+$('chordA').onclick = () => setChord('A'); $('chordP').onclick = () => setChord('prog');
+addEventListener('resize', layout);
+render();
+</script>
+</body></html>

@@ -378,7 +378,7 @@ fit(); addEventListener('resize', fit);
 if (CLAY_ON) {
   try { FEEL_DEFAULT = await (await fetch('./feel/기본.json')).json(); } catch (_) {}
   try { const s = localStorage.getItem(FEEL_LS); FEEL = s ? JSON.parse(s) : FEEL_DEFAULT; } catch (_) { FEEL = FEEL_DEFAULT; }
-  CLOCK0 = performance.now();                            // ≈ 모듈의 공통 박 기준 시각(첫 createSoundClay 때 잡힘) → 코드 바뀌는 순간을 박에 맞춤
+  CLOCK0 = -performance.timeOrigin;                      // = 모듈의 공통 박 기준(벽시계 0초) → 코드 바뀌는 순간이 마디 경계, 조합(mix) 페이지의 다른 화면과도 같은 코드
   droplets.forEach(attachSoundClay);
   ui = buildUI(); setHud(showHud);
   window.__clays = clays();
@@ -391,7 +391,7 @@ function setChord(i) {
   clays().forEach(cl => cl.setKey({ ...KEY }));          // 물방울마다 자기 키를 갖고 있어서 전부 바꿈
 }
 function tickChord(nowMs) {
-  if (!CLAY_ON) return;
+  if (!CLAY_ON || q.get('mix') === 'A') return;          // ?mix=A(조합 페이지 고정 코드)면 진행 안 함
   const i = Math.floor((nowMs - CLOCK0) / 1000 / CHORD_SEC) % PROGRESSION.length;
   if (i !== chordIdx) setChord(i);
 }

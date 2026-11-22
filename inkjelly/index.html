@@ -257,15 +257,18 @@ const SLAB = { l: [-190 * S, -105 * S, 180 * S], m: [0 * S, 70 * S, 215 * S], r:
                half: 0.30, edge: 0.26, lens: [10 * S, 0, 108 * S, 0.13], bub: [146 * S, 72 * S, 74 * S, 0.13] };
 const PEB = { r: [1.50, 1.08, 0.72], dent: [-0.45, -0.50, 0.56, 0.95] };
 const LAYOUT = [
-  { name: 'slab', px: [360, 400], z: 0.0, rot: [-0.10, 0.06, 0.0], voice: 'toy', note: 164.81,   // E3
+  { name: 'slab', px: [360, 400], z: 0.0, rot: [-0.10, 0.06, 0.0], voice: 'toy', note: 329.63,   // E4(신나게: 한 옥타브 위)
     sdf: slabSDF(SLAB), grid: 80,
     mat: { glowC: [-60 * S, 40 * S], lensC: [SLAB.lens[0], SLAB.lens[1]], lensR: SLAB.lens[2], top: SLAB.half, bub: [SLAB.bub[0], SLAB.bub[1], SLAB.bub[2]] } },
-  { name: 'pebble', px: [345, 915], z: 0.25, rot: [0.08, -0.10, THREE.MathUtils.degToRad(-12)], voice: 'toy', note: 220.00,  // A3
+  { name: 'pebble', px: [345, 915], z: 0.25, rot: [0.08, -0.10, THREE.MathUtils.degToRad(-12)], voice: 'toy', note: 440.00,  // A4(신나게: 한 옥타브 위)
     sdf: pebbleSDF(PEB), grid: 72,
     mat: { inkC: [0.22, 0.10, 0.05], inkR: [0.98, 0.88, 0.62], bodyR: PEB.r, dent: [PEB.dent[0], PEB.dent[1], 0.47] } },
 ];
 /* 화음 모드(sound-clay 5-1절): 04 물방울 화면과 같은 키(A 장화음 A·C#·E). 두 젤리가 E3·A3을 맡음(toy가 2~3음을 흩어 쳐서 화음이 됨) */
 const KEY = { rootHz: 110, scale: 'chord' };
+/* 조금 신나게(2026-11-22 사용자 요청 "듣기 편하긴 한데 좀 신나는"): 화음음(A·C#·E)은 그대로라 듣기 편함은 유지하고,
+   ① 박을 두 배(132BPM = 66BPM의 8분음표 → 다른 화면의 66BPM 박과도 어긋나지 않음) ② 박마다 칠 확률 0.42→0.6 ③ 맡은 음을 한 옥타브 위로 → 통통 튀는 느낌 */
+const UPBEAT = { bpm: 132, rules: { toy: { density: 0.6 } } };
 
 const CLAY_R = 1.2;   // 모듈 기준 크기 — 이 화면은 월드 단위 = 모듈 단위(배율 1)로 둠(젤리 크기 1.1~1.6이 기준과 비슷)
 const jellies = LAYOUT.map((L, i) => {
@@ -291,8 +294,8 @@ function attachSoundClay(j) {
     voice: j.voice, mute: MUTE, feel: FEEL,
     rotateOnEmptyDrag: false,
     exclusiveVoice: false,                               // 만진 젤리들은 계속 노래 — 멈추기는 '모두 멈춤'
-    key: KEY, note: j.note,
-    rules: { grid: { resolution: j.grid } },
+    key: KEY, note: j.note, bpm: UPBEAT.bpm,
+    rules: { grid: { resolution: j.grid }, ...UPBEAT.rules },
     onFeelChange: f => { saveFeel(f); feelPanel && feelPanel.refresh(); },
   });
   return j.clay;

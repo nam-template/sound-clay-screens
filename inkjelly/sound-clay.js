@@ -239,10 +239,32 @@ registerProcessor('sound-clay-voice',Voice);`;
          onChange(state) — 상태가 바뀔 때마다 호출(색 연동 등 나중 확장용 슬롯)
    반환: { root, mesh, state, update(t), start(), stop(), reset(), undo(), dispose(), paint(), pull() }
    ===================================================================== */
+/* 조합(mix) 모드: 주소에 ?mix=A(A 장화음 고정) 또는 ?mix=prog(A→F#m→D→E, 2마디씩)가 있으면
+   이 페이지의 모든 오브젝트가 toy 목소리로, 벽시계 기준의 같은 코드를 냄 → 여러 화면(iframe)을 한 페이지에 모아도 같은 박·같은 화음.
+   페이지가 setKey로 키를 바꿔도 mix 모드에선 무시함(코드는 벽시계가 정함). */
+export const MIX_PROGRESSION = [
+  { name: 'A', rootHz: 110.00, scale: 'chord' }, { name: 'F#m', rootHz: 92.50, scale: 'minor-chord' },
+  { name: 'D', rootHz: 146.83, scale: 'chord' }, { name: 'E', rootHz: 164.81, scale: 'chord' },
+];
+const MIX = (() => { try { const m = new URLSearchParams(globalThis.location?.search || '').get('mix'); return m === 'A' || m === 'prog' ? m : null; } catch (_) { return null; } })();
+const MIX_APIS = new Set();
+const wallSec = () => (performance.timeOrigin + performance.now()) / 1000;   // 벽시계(초): 다른 iframe·창과 같은 기준
+export function mixChord() {
+  if (!MIX) return null;
+  if (MIX === 'A') return { idx: 0, ...MIX_PROGRESSION[0] };
+  const sec = 2 * 4 * 60 / RULES.toy.bpm, idx = Math.floor(wallSec() / sec) % MIX_PROGRESSION.length;
+  return { idx, ...MIX_PROGRESSION[idx] };
+}
+let mixIdx = -1;
+if (MIX === 'prog') setInterval(() => { const c = mixChord(); if (c.idx === mixIdx) return; mixIdx = c.idx;
+  for (const a of MIX_APIS) a._mixKey({ rootHz: c.rootHz, scale: c.scale }); }, 100);
+export const MIX_MODE = MIX;
+
 export function createSoundClay(o) {
   const { THREE, MarchingCubes, parent, camera, canvas, material } = o;
   const R = deepMerge(structuredClone(RULES), o.rules || {});
   const base = o.base || SHAPES.roundBox();
+  if (MIX) { const c = mixChord(); o = { ...o, voice: 'toy', key: { rootHz: c.rootHz, scale: c.scale } }; }
   let voice = VOICES.includes(o.voice) ? o.voice : 'tone'; const mute = !!o.mute;
   let stiffness = o.stiffness ?? R.pull.stiffness;
   let spread = o.spread ?? R.pull.spread;
@@ -259,7 +281,7 @@ export function createSoundClay(o) {
   const isActive = () => group.peers.length < 2 || group.active === api || (!group.active && group.peers[0] === api);
   const isFirst = () => group.peers[0] === api;
   if (o.key) group.key = o.key;   // 한 오브젝트에만 넘겨도 같은 화면 전체가 같은 키
-  if (!group.clock) group.clock = performance.now();   // 같은 화면 공통 박의 기준 시각(toy)
+  if (!group.clock) group.clock = -performance.timeOrigin;   // 공통 박의 기준 = 벽시계 0초(toy) → 같은 화면은 물론 다른 iframe·창끼리도 같은 박
   /* 잡은 점 ↔ 손(커서) 연결선: 무엇을 잡고 있는지, 얼마나 버티는지 보여줌 */
   const tGeo = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
   const tether = new THREE.Line(tGeo, new THREE.LineBasicMaterial({ color: o.tetherColor ?? 0xffffff, transparent: true, opacity: 0.85, depthTest: false }));
@@ -803,7 +825,8 @@ export function createSoundClay(o) {
     setPitchScale(x) { pitchScale = Math.max(0.1, Math.min(8, x)); dirty = true; },   // 조율 바꾸기(형태·질감은 그대로)
     get pitchScale() { return pitchScale; },
     // 화음 모드: setKey({ rootHz, scale }) — 같은 캔버스 전체에 적용 · setNote(Hz) — 이 오브젝트가 맡은 음
-    setKey(k) { keyOpt = k || null; group.key = k || null; for (const p of group.peers) p._dirty(); },
+    setKey(k) { if (MIX) return; keyOpt = k || null; group.key = k || null; for (const p of group.peers) p._dirty(); },
+    _mixKey(k) { keyOpt = k; group.key = k; dirty = true; mix(); },   // mix 모드 전용(벽시계 코드) — 화면 갱신(rAF)이 멈춰 있어도(숨은 탭) 소리 엔진에 바로 전달
     get key() { return keyOpt || group.key || null; },
     setNote(hz) { note = hz || 0; dirty = true; },
     get note() { return note; },
@@ -827,12 +850,12 @@ export function createSoundClay(o) {
       canvas.removeEventListener('wheel', onWheel); canvas.removeEventListener('pointerdown', onDown); canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerup', onUp); canvas.removeEventListener('pointercancel', onUp); canvas.removeEventListener('contextmenu', noMenu);
       parent.remove(root); mc.geometry.dispose();
-      const i = group.peers.indexOf(api); if (i >= 0) group.peers.splice(i, 1); if (group.active === api) group.active = null; },
+      const i = group.peers.indexOf(api); if (i >= 0) group.peers.splice(i, 1); if (group.active === api) group.active = null; MIX_APIS.delete(api); },
     activate() { group.active = api; },        // 코드로 '지금 만질 대상' 지정(마이크 연결할 물방울 고를 때 등)
     get active() { return isActive(); },
   };
   if (o.feel) api.setFeel(o.feel);   // 감각 프리셋을 넘기면 시작부터 그 손맛
-  api._hitDist = hitDist; group.peers.push(api);
+  api._hitDist = hitDist; group.peers.push(api); if (MIX) MIX_APIS.add(api);
   return api;
 }
 
