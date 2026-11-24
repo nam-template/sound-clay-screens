@@ -77,16 +77,17 @@ camera.position.set(0, 0, CAMZ);
 const shared = {
   uTime: { value: 0 }, uRes: { value: new THREE.Vector2(1, 1) },
   uFrame: { value: new THREE.Vector2(W, H) }, uCamZ: { value: CAMZ }, uBgD: { value: BGD },
+  uGrainAmt: { value: 1 },   // 재질 안 그레인 세기. 후처리(POST)가 켜지면 0 → 그레인은 흐림 뒤에 후처리에서 또렷하게 얹음
 };
 function fit() {
   const h = Math.min(innerHeight, innerWidth / ASPECT), w = h * ASPECT;
   renderer.setPixelRatio(Math.min(2, devicePixelRatio)); renderer.setSize(Math.round(w), Math.round(h));
   stage.style.width = Math.round(w) + 'px'; stage.style.height = Math.round(h) + 'px';
   shared.uRes.value.set(Math.round(w) * renderer.getPixelRatio(), Math.round(h) * renderer.getPixelRatio());
+  postRT.setSize(shared.uRes.value.x, shared.uRes.value.y);   // 후처리 타깃도 같은 해상도(아래 POST 블록)
+  postMat.uniforms.uDpr.value = renderer.getPixelRatio();
 }
-const GLSL_COMMON = /* glsl */`
-  uniform float uTime, uCamZ, uBgD; uniform vec2 uRes, uFrame;
-  float hash(vec2 p){ p = fract(p*vec2(443.897,441.423)); p += dot(p, p.yx+19.19); return fract((p.x+p.y)*p.x); }
+const GLSL_BG = /* glsl */`
   // 프레임 좌표(u: 왼→오 0..1, v: 위→아래 0..1)에서의 배경색: 왼쪽 검정 → 오른쪽 크림, 경계는 위왼쪽→아래오른쪽 S자
   vec3 bgFrame(vec2 uv){
     float v = uv.y;
@@ -102,6 +103,11 @@ const GLSL_COMMON = /* glsl */`
     c *= mix(1.0, 0.90, smoothstep(0.55, 1.1, v) * smoothstep(0.0, 0.5, s));  // 오른쪽 아래는 살짝 따뜻하게 가라앉음
     return c;
   }
+`;   // 후처리도 이 함수로 '물방울 바로 뒤 배경색'을 앎 → 외곽이 배경으로 녹아듦
+const GLSL_COMMON = /* glsl */`
+  uniform float uTime, uCamZ, uBgD, uGrainAmt; uniform vec2 uRes, uFrame;
+  float hash(vec2 p){ p = fract(p*vec2(443.897,441.423)); p += dot(p, p.yx+19.19); return fract((p.x+p.y)*p.x); }
+  ${GLSL_BG}
   // 배경 판(z = -uBgD) 위의 월드 좌표 → 카메라에 보이는 프레임 좌표로 바꿔서 bgFrame 호출
   vec3 bgWorld(vec2 p){
     float k = uCamZ / (uCamZ + uBgD);
@@ -111,7 +117,7 @@ const GLSL_COMMON = /* glsl */`
   vec3 grain(vec3 c){
     float n = hash(gl_FragCoord.xy + fract(uTime*7.31)*vec2(91.7,53.3)) - 0.5;
     float lum = dot(c, vec3(0.333));
-    return c + n * mix(0.035, 0.065, smoothstep(0.0, 0.6, lum));
+    return c + n * mix(0.035, 0.065, smoothstep(0.0, 0.6, lum)) * uGrainAmt;
   }
 `;
 
@@ -121,7 +127,7 @@ const GLSL_COMMON = /* glsl */`
   const mat = new THREE.ShaderMaterial({
     uniforms: shared, depthWrite: false,
     vertexShader: `varying vec3 vW; void main(){ vec4 w = modelMatrix*vec4(position,1.); vW = w.xyz; gl_Position = projectionMatrix*viewMatrix*w; }`,
-    fragmentShader: GLSL_COMMON + `varying vec3 vW; void main(){ gl_FragColor = vec4(grain(bgWorld(vW.xy)), 1.); }`,
+    fragmentShader: GLSL_COMMON + `varying vec3 vW; void main(){ gl_FragColor = vec4(grain(bgWorld(vW.xy)), 0.); }`,   // 알파 0 = 배경(후처리에서 가장 흐림)
   });
   const bg = new THREE.Mesh(new THREE.PlaneGeometry(W * k * 1.2, H * k * 1.2), mat);
   bg.position.z = -BGD; bg.renderOrder = -1; scene.add(bg);
@@ -193,10 +199,132 @@ function makeDropMaterial(o = {}) {
         float sp2 = pow(max(dot(rf, normalize(vec3(-0.5, -0.55, 0.65))), 0.0), 600.0) * 0.25;
         col += vec3(1.0, 0.97, 0.92) * (sp * 1.4 + sp2);
 
-        gl_FragColor = vec4(grain(col), 1.0);
+        gl_FragColor = vec4(grain(col), ndv);   // 알파 = 정면도(1 앞면 가운데 → 0 외곽). 후처리가 이걸로 물방울 안 흐림을 정함
       }`,
   });
 }
+
+/* ---------- 후처리: 뒤쪽 흐림 · 뿌연 안개 · 번짐 · 스티플 그레인 ----------
+   장면을 렌더 타깃(색+깊이)에 그린 뒤 화면 전체 사각형 하나로 마무리.
+   1) 깊이 흐림: 카메라에서 멀수록(초점 POST.focus 뒤) 원형으로 흩어 읽음 → 뒤 물방울·배경이 날아감
+   2) 안개: 먼 곳일수록 검정을 우윳빛으로 들어 올림 + 느리게 흐르는 저주파 얼룩
+   3) 번짐: 밝은 곳을 넓게 퍼뜨려 더함(하이라이트·크림 배경이 빛처럼 번짐)
+   4) 그레인: 흐림 '뒤'에 얹어서 흐린 곳도 입자는 또렷 — 중간 톤에 점묘(디더) 입자가 가장 많음
+   ?raw=1 또는 G 키 → 후처리 끄고 원래 화면과 비교
+   ?grain= ?blur= ?haze= ?bloom= 로 세기 조절(기본 1) */
+const POST = {
+  on: !q.has('raw'),
+  // 초점 = 가장 앞 물방울의 앞면(카메라에서 ≈11.0). 흐림 구간을 물방울 두께(≈0.5~0.9)만큼 짧게 잡아서
+  // 같은 물방울 안에서도 앞면 가운데는 또렷하고, 뒤로 휘어 들어가는 외곽일수록 크게 번짐. ?focus= ?range= 로 조절
+  focus: +(q.get('focus') ?? 11.4), range: +(q.get('range') ?? 2.0),   // 거리 흐림(약하게 섞음): 뒤에 있는 물방울일수록 조금 더
+  rim: +(q.get('rim') ?? 1),                                             // 외곽 흐림 세기
+  blur: +(q.get('blur') ?? 1), haze: +(q.get('haze') ?? 1), bloom: +(q.get('bloom') ?? 1), grain: +(q.get('grain') ?? 1),
+};
+const postRT = new THREE.WebGLRenderTarget(1, 1, { samples: 4, type: THREE.HalfFloatType });
+postRT.depthTexture = new THREE.DepthTexture(1, 1); postRT.depthTexture.type = THREE.UnsignedIntType;
+const postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const postMat = new THREE.ShaderMaterial({
+  uniforms: {
+    tColor: { value: postRT.texture }, tDepth: { value: postRT.depthTexture },
+    uRes: shared.uRes, uTime: shared.uTime, uDpr: { value: 1 },
+    uNear: { value: camera.near }, uFar: { value: camera.far }, uFocus: { value: POST.focus }, uRange: { value: POST.range },
+    uBlur: { value: POST.blur }, uRim: { value: POST.rim }, uHaze: { value: POST.haze }, uBloom: { value: POST.bloom }, uGrain: { value: POST.grain },
+  },
+  depthTest: false, depthWrite: false,
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0., 1.); }`,
+  fragmentShader: /* glsl */`
+    #include <packing>
+    uniform sampler2D tColor, tDepth; uniform vec2 uRes;
+    uniform float uTime, uDpr, uNear, uFar, uFocus, uRange, uBlur, uRim, uHaze, uBloom, uGrain;
+    varying vec2 vUv;
+    float hash(vec2 p){ p = fract(p*vec2(443.897,441.423)); p += dot(p, p.yx+19.19); return fract((p.x+p.y)*p.x); }
+    float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.-2.*f);
+      return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y); }
+    float fbm(vec2 p){ float a = .5, s = 0.; for (int i = 0; i < 4; i++){ s += a*vnoise(p); p = p*2.03 + 7.1; a *= .5; } return s; }
+    // 정수 해시(격자 무늬 없는 입자용) — 픽셀 좌표 + 프레임 번호
+    ${GLSL_BG}
+    float ihash(vec2 p, float t){
+      uvec3 v = uvec3(ivec3(int(p.x), int(p.y), int(t)));
+      v = v * 1664525u + 1013904223u;
+      v.x += v.y*v.z; v.y += v.z*v.x; v.z += v.x*v.y;
+      v ^= v >> 16u;
+      v.x += v.y*v.z; v.y += v.z*v.x; v.z += v.x*v.y;
+      return float(v.x & 0x00ffffffu) / 16777216.0;
+    }
+    float dist(vec2 uv){ return -perspectiveDepthToViewZ(texture2D(tDepth, uv).x, uNear, uFar); }
+    // 0 = 또렷, 1 = 가장 흐림. 두 가지를 합침:
+    //  · 외곽: 알파(정면도)가 낮을수록 — 물방울 앞면 가운데는 또렷, 뒤로 휘어 들어가는 테두리일수록 번짐
+    //  · 거리: 뒤에 있는 물방울일수록 전체가 조금 더(최대 0.45)
+    //  · 배경(알파 0)은 0 → 배경 자체는 흐리지도 뿌옇게 하지도 않음(물방울 외곽이 배경 위로 번지는 것만 받음)
+    float coc(vec2 uv){
+      float a = texture2D(tColor, uv).a;
+      if (a < 0.001) return 0.0;
+      float rim = (1.0 - smoothstep(0.12, 0.72, a)) * uRim;
+      float far = smoothstep(uFocus, uFocus + uRange, dist(uv)) * 0.45;
+      return clamp(max(rim, far), 0.0, 1.0);
+    }
+    // 외곽 녹이기: 흐림 정도 k만큼 '이 자리 바로 뒤 배경색'(살짝 색 빠지고 들뜬)으로. 배경 자체(k=0)는 그대로
+    vec3 dissolve(vec2 uv, vec3 c, float k){
+      vec3 behind = bgFrame(vec2(uv.x, 1.0 - uv.y));
+      vec3 mist = mix(behind, vec3(dot(behind, vec3(0.333))), 0.2) + 0.04;
+      return mix(c, mist, smoothstep(0.15, 0.95, k));
+    }
+    void main(){
+      vec2 px = 1.0 / uRes;
+      float c0 = coc(vUv);
+      float maxR = 30.0 * uDpr * uBlur;                     // 최대 흐림 반경(화면 픽셀)
+      float r0 = c0 * maxR;
+      float rs = max(r0, maxR * 0.3);                     // 찾는 반경: 배경 픽셀도 근처 물방울 외곽의 번짐을 받도록 넓게
+
+      // 1) 흐림 — 황금각 원판 32점. 샘플이 '자기 흐림 반경'으로 여기까지 닿을 때만 섞음
+      //    → 또렷한 앞면·배경은 안 섞이고, 흐린 외곽만 주변(배경 쪽 포함)으로 번짐
+      //    샘플마다 섞기 '전에' 외곽 정도만큼 그 자리 바로 뒤 배경색으로 녹임
+      //    → 어두운 띠·금빛 림이 섞여 회색 고리가 되지 않고, 외곽이 배경 속으로 풀어짐
+      float fog = fbm(vUv * vec2(2.4, 3.0) + vec2(uTime * 0.015, -uTime * 0.01));   // 느리게 흐르는 얼룩 → 녹는 정도가 고르지 않게
+      float melt = mix(0.75, 1.0, fog) * uHaze;
+      vec3 acc = dissolve(vUv, texture2D(tColor, vUv).rgb, c0 * melt); float wsum = 1.0;
+      float rot = hash(gl_FragCoord.xy) * 6.2831;            // 샘플 패턴을 픽셀마다 돌려 줄무늬 대신 고운 노이즈로
+      for (int i = 1; i < 32; i++){
+        float fi = float(i), rr = sqrt(fi / 32.0) * rs, a = fi * 2.39996 + rot;
+        vec2 uv = vUv + vec2(cos(a), sin(a)) * rr * px;
+        float cn = coc(uv), cs = cn * maxR;
+        float w = smoothstep(rr - 1.5, rr + 0.5, max(cs, r0 * 0.35)) * (c0 > 0.0 ? 1.0 : 0.6);   // 배경 위로는 약하게만
+        acc += dissolve(uv, texture2D(tColor, uv).rgb, cn * melt) * w; wsum += w;
+      }
+      vec3 col = acc / wsum;
+
+      // 2) 번짐 — 물방울의 밝은 부분만 넓게 모아 더함(배경 크림은 제외)
+      vec3 glow = vec3(0.); float gR = 42.0 * uDpr;
+      for (int i = 0; i < 16; i++){
+        float fi = float(i) + 0.5, rr = sqrt(fi / 16.0) * gR, a = fi * 2.39996 + rot * 0.3;
+        vec4 s = texture2D(tColor, vUv + vec2(cos(a), sin(a)) * rr * px);
+        glow += max(s.rgb - 0.78, 0.0) * step(0.001, s.a);
+      }
+      col += glow / 16.0 * 0.55 * uBloom;
+
+      // 4) 스티플 그레인 — CSS 픽셀 한 칸 = 입자 한 칸, 24fps로 바뀜
+      vec2 g = floor(gl_FragCoord.xy / max(uDpr, 1.0));
+      float tf = floor(uTime * 24.0);
+      float n1 = ihash(g, tf), n2 = ihash(g, tf + 977.0);
+      float lum = clamp(dot(col, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
+      float dots = step(n1, lum) - lum;                       // 밝기만큼 켜지는 점: 밝은 곳엔 검은 점이 드문드문, 어두운 곳엔 흰 점
+      float mid = 4.0 * lum * (1.0 - lum);                    // 중간 톤에서 가장 거침
+      col += dots * (0.06 + 0.16 * mid) * uGrain;
+      col += (n2 - 0.5) * 0.05 * uGrain;
+      gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+    }`,
+});
+const postQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMat);
+const postScene = new THREE.Scene(); postScene.add(postQuad);
+function applyPost(on) { POST.on = on; shared.uGrainAmt.value = on ? 0 : 1; }
+applyPost(POST.on);
+addEventListener('keydown', e => { if ((e.key === 'g' || e.key === 'G') && !e.ctrlKey && !e.metaKey && !e.altKey && e.target.tagName !== 'INPUT') applyPost(!POST.on); });
+function renderFrame() {
+  if (!POST.on) { renderer.setRenderTarget(null); renderer.render(scene, camera); return; }
+  renderer.setRenderTarget(postRT); renderer.render(scene, camera);
+  renderer.setRenderTarget(null); renderer.render(postScene, postCam);
+}
+window.__post = POST; window.__applyPost = applyPost;
 
 /* ---------- 거리함수(안쪽 음수) ---------- */
 const ellipsoidSDF = (rx, ry, rz) => (x, y, z) => {
@@ -457,7 +585,7 @@ function frame(t) {
   }
   tickChord(performance.now());
   if (showHud) drawHud();
-  renderer.render(scene, camera);
+  renderFrame();
 }
 window.__frame = frame;   // 검증용(백그라운드 탭에서 한 프레임 직접 돌리기)
 function loop(ms) { frame(ms / 1000); requestAnimationFrame(loop); }
