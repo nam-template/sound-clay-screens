@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Essence Orb</title>
+<style>
+  /* 레퍼런스(Pinterest 핀 794744665512825512 — 흰 바탕 투명 구슬에 초록 에센스가 들어와 휘돌며 찼다가 맑아짐, 720×528 · 20.7초, 약 5.2초마다 반복) 재현 화면 + 소리찰흙 모듈.
+     자리·크기·주기는 mx 측정(motion-extract-projects/sound-clay 핀 794744) 기준. 기본은 글자 없음, H 키로 패널·버튼 켜기 */
+  html,body{margin:0;height:100%;background:#fbfbfb;overflow:hidden;font:11px/1.45 Inter,system-ui,sans-serif;color:#fff}
+  body{display:flex;align-items:center;justify-content:center}
+  #stage{position:relative}
+  canvas{display:block}
+  .off{display:none!important}
+  /* HUD: 원본 index.html 의 MIX RATIO · SHAPE → VOICE 형식(흰 선·작은 글자) */
+  #hud{position:absolute;left:16px;top:16px;width:150px;pointer-events:none;mix-blend-mode:difference}
+  #hud h4{margin:12px 0 2px;font:600 13px/1 "Barlow Condensed",Inter,sans-serif;letter-spacing:.03em}
+  #hud .rule{height:1px;background:#fff;margin:4px 0 6px}
+  #hud .row{display:flex;justify-content:space-between;font-size:10px;margin-top:5px}
+  #hud .sub{font-size:8px;opacity:.7;margin-top:-1px}
+  #hud .bar{height:3px;background:#fff;margin-top:2px}
+  #hud .track{height:1px;background:#fff6;margin-top:-2px}
+  #ctl{position:absolute;left:12px;right:12px;bottom:10px;display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+  #ctl button,#ctl select{font:inherit;background:#0008;color:#fff;border:1px solid #fff5;border-radius:4px;padding:3px 8px;cursor:pointer}
+  #ctl select option{color:#000}
+  #hint{position:absolute;left:12px;right:12px;bottom:40px;font-size:10px;opacity:.85;mix-blend-mode:difference;pointer-events:none}
+  #hkey{position:absolute;right:10px;bottom:8px;font-size:10px;opacity:.28;mix-blend-mode:difference;pointer-events:none}
+  #feel{position:absolute;right:12px;top:12px;width:250px;max-height:calc(100% - 70px);overflow:auto;background:#141110e8;border:1px solid #fff3;border-radius:8px;padding:10px 12px;z-index:50}
+  #feel label{display:block;margin:6px 0} #feel label div{display:flex;justify-content:space-between;opacity:.85}
+  #feel input[type=range]{width:100%}
+  #feel .bar{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+  #feel button,#feel input[type=text]{font:inherit;background:#0006;color:#fff;border:1px solid #fff4;border-radius:4px;padding:3px 6px}
+  #feel input[type=text]{width:100%;box-sizing:border-box;margin-bottom:4px}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="hud" class="off"></div>
+  <div id="hint" class="off">빈 곳 클릭 = 새 구슬(작을수록 높은 음) · 큰 구슬은 약 5.2초마다 에센스가 찼다가 맑아짐 · 화음 A→F#m→D→E 자동 진행 · 왼드래그 당기기 · Ctrl 드래그 홈 · 오른드래그(Shift) 문지르기: 천천히=SINE 왔다갔다=SQUARE 빠르게=WHITE 튕기기=NEEDLE 꾹=PINK · Alt 지우기 · 휠 찰흙 더하기/덜기 · F 브러시 크기 · Shift+F 세기 · Ctrl+Z / Ctrl+Shift+Z · 만진 물방울들은 계속 노래(■ 모두 멈춤) · 🎤·🎵(끌어다 놓기)는 마지막에 만진 물방울이 들음 · H 숨기기</div>
+  <div id="ctl" class="off"></div>
+  <div id="feel" class="off"></div>
+  <div id="hkey">H</div>
+</div>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { MarchingCubes } from 'three/addons/objects/MarchingCubes.js';
+// 모듈 사본(원본·관리: ../../03_소리찰흙/작업/sound-clay.js — 여기서는 고치지 않음, 새 판은 다시 복사)
+import { createSoundClay, SHAPES, VOICES, WAVES, FEEL_SCHEMA, RULES, SCALES } from './sound-clay.js';
+// 단화음(근음·단3도·5도) — 모듈 새 판엔 'minor-chord'가 들어 있음. 옛 판 사본에서도 돌게 없을 때만 채움
+if (!SCALES['minor-chord']) SCALES['minor-chord'] = [0, 3, 7];
+
+/* ---------------------------------------------------------------
+   옵션
+   ?mute=1   → 소리 계산만, 스피커 출력 없음(테스트는 항상 이걸로)
+   ?still=1  → 떠다니는 움직임 멈춤(레퍼런스와 정지 비교용)
+   ?t=2.5    → 에센스 주기의 그 순간에 멈춤
+   ?noclay=1 → 모듈 없이 유리 물방울만(모양 비교용)
+   ?hud=1    → 패널·버튼 켠 채로 시작(기본은 꺼짐, H 키로 토글)
+   --------------------------------------------------------------- */
+const q = new URLSearchParams(location.search);
+const STILL = q.has('still'), MUTE = q.has('mute'), CLAY_ON = !q.has('noclay');
+const FIXED_T = q.has('t') ? +q.get('t') : null;   // ?t=2.5 → 에센스 주기(0~5.24초)의 그 순간에 멈춤(정지 비교용)
+
+/* ---------- 프레임(원본 720×528) ---------- */
+const ASPECT = 720 / 528, FOV = 26, CAMZ = 12, BGD = 3;   // BGD = 배경 판이 물방울 뒤로 떨어진 거리(굴절 세기)
+const H = 2 * CAMZ * Math.tan(THREE.MathUtils.degToRad(FOV / 2)), W = H * ASPECT;   // z=0에서 보이는 프레임 크기
+
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;   // 셰이더가 화면 값을 직접 냄
+stage.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(FOV, ASPECT, 0.1, 100);
+camera.position.set(0, 0, CAMZ);
+
+/* ---------- 공통 셰이더 조각: 배경 함수 · 필름 그레인 ---------- */
+const shared = {
+  uTime: { value: 0 }, uRes: { value: new THREE.Vector2(1, 1) },
+  uFrame: { value: new THREE.Vector2(W, H) }, uCamZ: { value: CAMZ }, uBgD: { value: BGD },
+  uGrainAmt: { value: 1 },   // 재질 안 그레인 세기. 후처리(POST)가 켜지면 0 → 그레인은 흐림 뒤에 후처리에서 또렷하게 얹음
+};
+function fit() {
+  const h = Math.min(innerHeight, innerWidth / ASPECT), w = h * ASPECT;
+  renderer.setPixelRatio(Math.min(2, devicePixelRatio)); renderer.setSize(Math.round(w), Math.round(h));
+  stage.style.width = Math.round(w) + 'px'; stage.style.height = Math.round(h) + 'px';
+  shared.uRes.value.set(Math.round(w) * renderer.getPixelRatio(), Math.round(h) * renderer.getPixelRatio());
+  postRT.setSize(shared.uRes.value.x, shared.uRes.value.y);   // 후처리 타깃도 같은 해상도(아래 POST 블록)
+  postMat.uniforms.uDpr.value = renderer.getPixelRatio();
+}
+const GLSL_BG = /* glsl */`
+  // 프레임 좌표(u: 왼→오 0..1, v: 위→아래 0..1)에서의 배경색: 위 흰색 → 가운데 푸른 회색 → 아래 검정(세로 그라데이션)
+  // 프레임 좌표(u: 왼→오, v: 위→아래)에서의 배경색: 원본은 거의 평평한 흰색(255) — 가운데가 아주 살짝 더 밝음
+  vec3 bgFrame(vec2 uv){
+    float d = length((uv - 0.5) * vec2(1.36, 1.0));
+    return vec3(0.992, 0.993, 0.995) - 0.022*smoothstep(0.3, 0.9, d);
+  }
+`;   // 후처리도 이 함수로 '물방울 바로 뒤 배경색'을 앎 → 외곽이 배경으로 녹아듦
+const GLSL_COMMON = /* glsl */`
+  uniform float uTime, uCamZ, uBgD, uGrainAmt; uniform vec2 uRes, uFrame;
+  float hash(vec2 p){ p = fract(p*vec2(443.897,441.423)); p += dot(p, p.yx+19.19); return fract((p.x+p.y)*p.x); }
+  ${GLSL_BG}
+  // 배경 판(z = -uBgD) 위의 월드 좌표 → 카메라에 보이는 프레임 좌표로 바꿔서 bgFrame 호출
+  vec3 bgWorld(vec2 p){
+    float k = uCamZ / (uCamZ + uBgD);
+    vec2 uv = vec2(p.x*k/uFrame.x + 0.5, 0.5 - p.y*k/uFrame.y);
+    return bgFrame(uv);
+  }
+  vec3 grain(vec3 c){
+    float n = hash(gl_FragCoord.xy + fract(uTime*7.31)*vec2(91.7,53.3)) - 0.5;
+    float lum = dot(c, vec3(0.333));
+    return c + n * mix(0.035, 0.065, smoothstep(0.0, 0.6, lum)) * uGrainAmt;
+  }
+`;
+
+/* ---------- 배경 판 ---------- */
+{
+  const k = (CAMZ + BGD) / CAMZ;
+  const mat = new THREE.ShaderMaterial({
+    uniforms: shared, depthWrite: false,
+    vertexShader: `varying vec3 vW; void main(){ vec4 w = modelMatrix*vec4(position,1.); vW = w.xyz; gl_Position = projectionMatrix*viewMatrix*w; }`,
+    fragmentShader: GLSL_COMMON + `varying vec3 vW; void main(){ gl_FragColor = vec4(grain(bgWorld(vW.xy)), 0.); }`,   // 알파 0 = 배경(후처리에서 가장 흐림)
+  });
+  const bg = new THREE.Mesh(new THREE.PlaneGeometry(W * k * 1.2, H * k * 1.2), mat);
+  bg.position.z = -BGD; bg.renderOrder = -1; scene.add(bg);
+}
+
+/* ---------- 구슬 재질: 렌즈처럼 배경 판을 꺾어 읽는 셰이더 + 에센스(색 액체) 채움 ----------
+   메시가 무엇이든(구·마칭큐브) position·normal만 있으면 동작 → sound-clay 표면에도 그대로 씀.
+   에센스: 로컬 좌표의 원(중심 uFillC, 반지름 uFillR) 안쪽이 uTint 색 액체. 가장자리는 노이즈로 일렁이고,
+   안은 느리게 휘도는 줄무늬(밝은 청록 ↔ 짙은 초록). uFill = 진하기(0이면 맑은 유리) */
+function makeDropMaterial(o = {}) {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      ...shared,
+      uIor: { value: o.ior ?? 1.33 }, uSoft: { value: o.soft ?? 0 }, uSeed: { value: o.seed ?? 0 },
+      uWobble: { value: o.wobble ?? 0.012 },
+      uLight: { value: new THREE.Vector3(-0.35, 0.75, 0.56).normalize() },
+      uTint: { value: new THREE.Color(...(o.tint || [0.45, 0.72, 0.68])) },
+      uFill: { value: o.fill ?? 0 }, uPale: { value: o.pale ?? 0.42 }, uFillR: { value: o.fillR ?? 99 }, uFillC: { value: new THREE.Vector2(0, 0) },
+      uLs: { value: 1 },                 // 메시 로컬 좌표 → 월드 길이(모듈 표면은 기준 크기라 그 배율)
+    },
+    vertexShader: /* glsl */`
+      uniform float uTime, uSeed, uWobble;
+      varying vec3 vW, vN, vL;
+      void main(){
+        vec3 p = position;
+        float w = sin(p.x*3.1 + uTime*0.9 + uSeed) * sin(p.y*2.7 - uTime*0.7 + uSeed*1.7) + 0.5*sin(p.z*4.0 + uTime*1.1);
+        p += normal * w * uWobble;
+        vec4 wp = modelMatrix * vec4(p, 1.);
+        vW = wp.xyz; vN = normalize(mat3(modelMatrix) * normal); vL = position;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }`,
+    fragmentShader: GLSL_COMMON + /* glsl */`
+      uniform float uIor, uSoft, uLs, uSeed, uFill, uFillR, uPale; uniform vec3 uLight, uTint; uniform vec2 uFillC;
+      varying vec3 vW, vN, vL;
+      float vn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.-2.*f);
+        return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y); }
+      float fbm(vec2 p){ float a = .5, s = 0.; for (int i = 0; i < 4; i++){ s += a*vn(p); p = p*2.07 + 3.1; a *= .5; } return s; }
+      vec3 throughTo(vec3 o, vec3 d){
+        if (d.z > -0.05) return bgFrame(vec2(0.5));
+        float t = (-uBgD - o.z) / d.z; vec2 p = (o + d*t).xy;
+        if (uSoft < 0.001) return bgWorld(p);
+        vec3 c = vec3(0.);
+        for (int i = 0; i < 6; i++){ float a = float(i)*1.047 + 0.4; c += bgWorld(p + vec2(cos(a), sin(a))*uSoft); }
+        return c / 6.0;
+      }
+      // 반사로 보이는 가짜 스튜디오: 거의 흰 방 + 옆쪽에 회색 띠 몇 개(원본 유리 구슬의 회색 줄무늬)
+      vec3 env(vec3 r){
+        float band = smoothstep(0.55, 0.9, abs(sin(r.y*3.4 + r.x*1.3))) * 0.55 + smoothstep(-0.2, -0.75, r.y) * 0.35;
+        return vec3(0.97) - band * vec3(0.42, 0.43, 0.44);
+      }
+      void main(){
+        vec3 n = normalize(vN);
+        vec3 v = normalize(vW - cameraPosition);
+        if (dot(n, v) > 0.0) n = -n;
+        float ndv = clamp(-dot(n, v), 0.0, 1.0);
+
+        // 1) 통과: 볼록렌즈 꺾임 + 안쪽 면에 비친 스튜디오(흰 바탕이라 이게 없으면 유리가 안 보임)
+        float bend = (uIor - 1.0) * 1.7;
+        vec3 r2 = normalize(vec3(v.xy - n.xy * bend, v.z));
+        vec3 trans = throughTo(vW, r2);
+        vec3 inside = env(normalize(vec3(-n.xy * 1.4, 0.6) + vec3(0.0, 0.0, -0.2)));
+        trans = mix(trans, inside, 0.5 * (1.0 - smoothstep(0.5, 0.98, ndv)) + 0.1);
+        float inner = smoothstep(0.05 + uSoft*0.4, 0.30 + uSoft*0.6, ndv);
+        trans *= mix(0.62, 1.0, inner);   // 가장자리 안쪽 회색 띠(흰 배경 위라 검정까지는 안 감)
+
+        // 2) 에센스: 원 안쪽만 색 액체. 가장자리 일렁임 + 휘도는 줄무늬
+        vec2 lp = vL.xy * uLs;
+        float t = uTime;
+        float edgeN = fbm(lp * 2.2 + vec2(t*0.35, -t*0.28) + uSeed) - 0.5;
+        float dC = length(lp - uFillC) + edgeN * (0.03 + 0.25 * smoothstep(1.0, 2.0, uFillR));   // 작은 방울일 땐 둥글게, 퍼질수록 일렁임
+        float m = smoothstep(uFillR + 0.03, uFillR - 0.05, dC) * uFill;
+        float ring = smoothstep(uFillR - 0.16, uFillR - 0.02, dC) * smoothstep(uFillR + 0.03, uFillR - 0.02, dC);   // 방울 테두리(짙은 선)
+        // 휘돎: 시간에 따라 도는 좌표 위 도메인 워프 노이즈(이음선 없음)
+        float ca = cos(t*0.45), sa = sin(t*0.45);
+        vec2 sq = mat2(ca, -sa, sa, ca) * (lp - uFillC) * 1.5 + uSeed;
+        vec2 wq = vec2(fbm(sq + vec2(0.0, t*0.12)), fbm(sq + vec2(5.2, -t*0.1)));
+        float swirl = fbm(sq + 2.6*wq);
+        vec3 deep = uTint * vec3(0.48, 0.70, 0.62), pale = mix(uTint, vec3(1.0), uPale);
+        vec3 ess = mix(pale, deep, smoothstep(0.52, 0.8, swirl) * mix(1.0, 0.45, inner));
+        ess = mix(deep * 0.85, ess, mix(0.25, 1.0, inner));   // 가장자리 쪽이 짙음
+        ess = mix(ess, deep * 0.7, ring * 0.65 * step(uFillR, 2.0));
+        ess = mix(ess, ess * (0.8 + 0.25*inside), 0.6);  // 액체 안에도 스튜디오 줄무늬가 비침
+        trans = mix(trans, ess, m);
+
+        // 3) 반사(프레넬) — 얇은 회색 테두리
+        vec3 rf = reflect(v, n);
+        float fres = 0.04 + 0.96 * pow(1.0 - ndv, 4.0);
+        vec3 col = trans * (1.0 - fres) + env(rf) * fres;
+        float rim = smoothstep(0.12 + uSoft*0.5, 0.02, ndv);
+        col = mix(col, mix(vec3(0.62), deep * 0.8, m), rim * 0.7);
+
+        // 4) 하이라이트: 왼쪽 위 창 하나 + 오른쪽 아래 작은 반사
+        float sp = pow(max(dot(rf, uLight), 0.0), mix(500.0, 80.0, clamp(uSoft*6.0,0.,1.)));
+        float sp2 = pow(max(dot(rf, normalize(vec3(0.55, -0.5, 0.65))), 0.0), 300.0) * 0.4;
+        col += vec3(1.0) * (sp * 0.9 + sp2);
+
+        gl_FragColor = vec4(grain(col), ndv);
+      }`,
+  });
+}
+
+/* ---------- 후처리: 뒤쪽 흐림 · 뿌연 안개 · 번짐 · 스티플 그레인 ----------
+   장면을 렌더 타깃(색+깊이)에 그린 뒤 화면 전체 사각형 하나로 마무리.
+   1) 깊이 흐림: 카메라에서 멀수록(초점 POST.focus 뒤) 원형으로 흩어 읽음 → 뒤 물방울·배경이 날아감
+   2) 안개: 먼 곳일수록 검정을 우윳빛으로 들어 올림 + 느리게 흐르는 저주파 얼룩
+   3) 번짐: 밝은 곳을 넓게 퍼뜨려 더함(하이라이트·크림 배경이 빛처럼 번짐)
+   4) 그레인: 흐림 '뒤'에 얹어서 흐린 곳도 입자는 또렷 — 중간 톤에 점묘(디더) 입자가 가장 많음
+   ?raw=1 또는 G 키 → 후처리 끄고 원래 화면과 비교
+   ?grain= ?blur= ?haze= ?bloom= 로 세기 조절(기본 1) */
+const POST = {
+  on: !q.has('raw'),
+  // 초점 = 가장 앞 물방울의 앞면(카메라에서 ≈11.0). 흐림 구간을 물방울 두께(≈0.5~0.9)만큼 짧게 잡아서
+  // 같은 물방울 안에서도 앞면 가운데는 또렷하고, 뒤로 휘어 들어가는 외곽일수록 크게 번짐. ?focus= ?range= 로 조절
+  focus: +(q.get('focus') ?? 11.4), range: +(q.get('range') ?? 2.0),   // 거리 흐림(약하게 섞음): 뒤에 있는 물방울일수록 조금 더
+  rim: +(q.get('rim') ?? 0),                                             // 외곽 흐림 세기(원본 테두리는 또렷해서 끔)
+  blur: +(q.get('blur') ?? 1), haze: +(q.get('haze') ?? 1), bloom: +(q.get('bloom') ?? 0), grain: +(q.get('grain') ?? 0.15),
+};
+const postRT = new THREE.WebGLRenderTarget(1, 1, { samples: 4, type: THREE.HalfFloatType });
+postRT.depthTexture = new THREE.DepthTexture(1, 1); postRT.depthTexture.type = THREE.UnsignedIntType;
+const postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const postMat = new THREE.ShaderMaterial({
+  uniforms: {
+    tColor: { value: postRT.texture }, tDepth: { value: postRT.depthTexture },
+    uRes: shared.uRes, uTime: shared.uTime, uDpr: { value: 1 },
+    uNear: { value: camera.near }, uFar: { value: camera.far }, uFocus: { value: POST.focus }, uRange: { value: POST.range },
+    uBlur: { value: POST.blur }, uRim: { value: POST.rim }, uHaze: { value: POST.haze }, uBloom: { value: POST.bloom }, uGrain: { value: POST.grain },
+  },
+  depthTest: false, depthWrite: false,
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0., 1.); }`,
+  fragmentShader: /* glsl */`
+    #include <packing>
+    uniform sampler2D tColor, tDepth; uniform vec2 uRes;
+    uniform float uTime, uDpr, uNear, uFar, uFocus, uRange, uBlur, uRim, uHaze, uBloom, uGrain;
+    varying vec2 vUv;
+    float hash(vec2 p){ p = fract(p*vec2(443.897,441.423)); p += dot(p, p.yx+19.19); return fract((p.x+p.y)*p.x); }
+    float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.-2.*f);
+      return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y); }
+    float fbm(vec2 p){ float a = .5, s = 0.; for (int i = 0; i < 4; i++){ s += a*vnoise(p); p = p*2.03 + 7.1; a *= .5; } return s; }
+    // 정수 해시(격자 무늬 없는 입자용) — 픽셀 좌표 + 프레임 번호
+    ${GLSL_BG}
+    float ihash(vec2 p, float t){
+      uvec3 v = uvec3(ivec3(int(p.x), int(p.y), int(t)));
+      v = v * 1664525u + 1013904223u;
+      v.x += v.y*v.z; v.y += v.z*v.x; v.z += v.x*v.y;
+      v ^= v >> 16u;
+      v.x += v.y*v.z; v.y += v.z*v.x; v.z += v.x*v.y;
+      return float(v.x & 0x00ffffffu) / 16777216.0;
+    }
+    float dist(vec2 uv){ return -perspectiveDepthToViewZ(texture2D(tDepth, uv).x, uNear, uFar); }
+    // 0 = 또렷, 1 = 가장 흐림. 두 가지를 합침:
+    //  · 외곽: 알파(정면도)가 낮을수록 — 물방울 앞면 가운데는 또렷, 뒤로 휘어 들어가는 테두리일수록 번짐
+    //  · 거리: 뒤에 있는 물방울일수록 전체가 조금 더(최대 0.45)
+    //  · 배경(알파 0)은 0 → 배경 자체는 흐리지도 뿌옇게 하지도 않음(물방울 외곽이 배경 위로 번지는 것만 받음)
+    float coc(vec2 uv){
+      float a = texture2D(tColor, uv).a;
+      if (a < 0.001) return 0.0;
+      float rim = (1.0 - smoothstep(0.12, 0.72, a)) * uRim;
+      float far = smoothstep(uFocus, uFocus + uRange, dist(uv)) * 0.45;
+      return clamp(max(rim, far), 0.0, 1.0);
+    }
+    // 외곽 녹이기: 흐림 정도 k만큼 '이 자리 바로 뒤 배경색'(살짝 색 빠지고 들뜬)으로. 배경 자체(k=0)는 그대로
+    vec3 dissolve(vec2 uv, vec3 c, float k){
+      vec3 behind = bgFrame(vec2(uv.x, 1.0 - uv.y));
+      vec3 mist = mix(behind, vec3(dot(behind, vec3(0.333))), 0.2) + 0.04;
+      return mix(c, mist, smoothstep(0.15, 0.95, k));
+    }
+    void main(){
+      vec2 px = 1.0 / uRes;
+      float c0 = coc(vUv);
+      float maxR = 30.0 * uDpr * uBlur;                     // 최대 흐림 반경(화면 픽셀)
+      float r0 = c0 * maxR;
+      float rs = max(r0, maxR * 0.3);                     // 찾는 반경: 배경 픽셀도 근처 물방울 외곽의 번짐을 받도록 넓게
+
+      // 1) 흐림 — 황금각 원판 32점. 샘플이 '자기 흐림 반경'으로 여기까지 닿을 때만 섞음
+      //    → 또렷한 앞면·배경은 안 섞이고, 흐린 외곽만 주변(배경 쪽 포함)으로 번짐
+      //    샘플마다 섞기 '전에' 외곽 정도만큼 그 자리 바로 뒤 배경색으로 녹임
+      //    → 어두운 띠·금빛 림이 섞여 회색 고리가 되지 않고, 외곽이 배경 속으로 풀어짐
+      float fog = fbm(vUv * vec2(2.4, 3.0) + vec2(uTime * 0.015, -uTime * 0.01));   // 느리게 흐르는 얼룩 → 녹는 정도가 고르지 않게
+      float melt = mix(0.75, 1.0, fog) * uHaze;
+      vec3 acc = dissolve(vUv, texture2D(tColor, vUv).rgb, c0 * melt); float wsum = 1.0;
+      float rot = hash(gl_FragCoord.xy) * 6.2831;            // 샘플 패턴을 픽셀마다 돌려 줄무늬 대신 고운 노이즈로
+      for (int i = 1; i < 32; i++){
+        float fi = float(i), rr = sqrt(fi / 32.0) * rs, a = fi * 2.39996 + rot;
+        vec2 uv = vUv + vec2(cos(a), sin(a)) * rr * px;
+        float cn = coc(uv), cs = cn * maxR;
+        float w = smoothstep(rr - 1.5, rr + 0.5, max(cs, r0 * 0.35)) * (c0 > 0.0 ? 1.0 : 0.6);   // 배경 위로는 약하게만
+        acc += dissolve(uv, texture2D(tColor, uv).rgb, cn * melt) * w; wsum += w;
+      }
+      vec3 col = acc / wsum;
+
+      // 2) 번짐 — 물방울의 밝은 부분만 넓게 모아 더함(배경 크림은 제외)
+      vec3 glow = vec3(0.); float gR = 42.0 * uDpr;
+      for (int i = 0; i < 16; i++){
+        float fi = float(i) + 0.5, rr = sqrt(fi / 16.0) * gR, a = fi * 2.39996 + rot * 0.3;
+        vec4 s = texture2D(tColor, vUv + vec2(cos(a), sin(a)) * rr * px);
+        glow += max(s.rgb - 0.78, 0.0) * step(0.001, s.a);
+      }
+      col += glow / 16.0 * 0.55 * uBloom;
+
+      // 4) 스티플 그레인 — CSS 픽셀 한 칸 = 입자 한 칸, 24fps로 바뀜
+      vec2 g = floor(gl_FragCoord.xy / max(uDpr, 1.0));
+      float tf = floor(uTime * 24.0);
+      float n1 = ihash(g, tf), n2 = ihash(g, tf + 977.0);
+      float lum = clamp(dot(col, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
+      float dots = step(n1, lum) - lum;                       // 밝기만큼 켜지는 점: 밝은 곳엔 검은 점이 드문드문, 어두운 곳엔 흰 점
+      float mid = 4.0 * lum * (1.0 - lum);                    // 중간 톤에서 가장 거침
+      col += dots * (0.06 + 0.16 * mid) * uGrain;
+      col += (n2 - 0.5) * 0.05 * uGrain;
+      gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+    }`,
+});
+const postQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMat);
+const postScene = new THREE.Scene(); postScene.add(postQuad);
+function applyPost(on) { POST.on = on; shared.uGrainAmt.value = on ? 0 : 1; }
+applyPost(POST.on);
+addEventListener('keydown', e => { if ((e.key === 'g' || e.key === 'G') && !e.ctrlKey && !e.metaKey && !e.altKey && e.target.tagName !== 'INPUT') applyPost(!POST.on); });
+function renderFrame() {
+  if (!POST.on) { renderer.setRenderTarget(null); renderer.render(scene, camera); return; }
+  renderer.setRenderTarget(postRT); renderer.render(scene, camera);
+  renderer.setRenderTarget(null); renderer.render(postScene, postCam);
+}
+window.__post = POST; window.__applyPost = applyPost;
+
+/* ---------- 거리함수(안쪽 음수) ---------- */
+const ellipsoidSDF = (rx, ry, rz) => (x, y, z) => {
+  const k0 = Math.hypot(x / rx, y / ry, z / rz), k1 = Math.hypot(x / (rx * rx), y / (ry * ry), z / (rz * rz));
+  return k1 < 1e-9 ? -Math.min(rx, ry, rz) : k0 * (k0 - 1) / k1;
+};
+
+/* ---------- 물방울 목록(레퍼런스 배치) ----------
+   u,v = 프레임 위 중심(0..1), r = 반지름(프레임 폭 대비), sx/sy = 가로세로 눌림, flat = 두께(z) 비율,
+   rot = 기울기(도), z = 앞뒤, soft = 초점 흐림, voice = 이 물방울의 목소리 */
+/* 원본(720×528)에서 mx로 잰 자리(px → u = x/720, v = y/528, r = 반지름/720):
+   큰 구슬 중심 (364, 282) 반지름 176 · 연파랑 (558, 441) 73 · 파랑 (605, 125) 46 · 진초록 (98, 52) 48 · 세이지 (29, 333) 72(왼쪽 잘림, 흐림)
+   작은 구슬은 원본에서 3~6px만 흔들림. tint = 색, fill 1 = 처음부터 색 액체로 찬 구슬 */
+const LAYOUT = [
+  { name: 'essence',  u: 0.505, v: 0.535, r: 0.245, sx: 1.00, sy: 1.00, flat: 0.95, rot: 0, z: 0.0,  soft: 0.00, fill: 0, tint: [0.45, 0.72, 0.68], voice: 'toy', note: 110.00 },  // A2
+  { name: 'skyblue', pale: 0.3,  u: 0.775, v: 0.835, r: 0.102, sx: 1.00, sy: 0.97, flat: 0.92, rot: 0, z: 1.2,  soft: 0.00, fill: 1, tint: [0.62, 0.80, 1.00], voice: 'toy', note: 220.00 },  // A3
+  { name: 'blue', pale: 0.12,     u: 0.840, v: 0.237, r: 0.064, sx: 1.00, sy: 0.98, flat: 0.92, rot: 0, z: -0.4, soft: 0.00, fill: 1, tint: [0.40, 0.62, 0.95], voice: 'toy', note: 440.00 },  // A4
+  { name: 'green', pale: 0,    u: 0.136, v: 0.098, r: 0.067, sx: 1.00, sy: 1.00, flat: 0.92, rot: 0, z: -0.2, soft: 0.00, fill: 1, tint: [0.12, 0.62, 0.20], voice: 'toy', note: 329.63 },  // E4
+  { name: 'sage', pale: 0.35,     u: 0.040, v: 0.631, r: 0.100, sx: 0.95, sy: 1.05, flat: 0.90, rot: 0, z: -1.2, soft: 0.10, fill: 1, tint: [0.80, 0.86, 0.74], voice: 'toy', note: 164.81 },  // E3
+];
+const PALETTE = LAYOUT.slice(1).map(L => L.tint);
+/* 화음 모드(sound-clay 5-1절): 화면 전체가 같은 키(A 장조 5음 음계)를 쓰고, 물방울마다 화음 음(note) 하나를 맡음.
+   클수록 낮고 작을수록 높게(A2 → E3 → A3 → C#4 → E4 → A4). 형태로 바뀌는 음도 이 음계의 가장 가까운 음으로 스냅.
+   기본 목소리 = toy(펠트 망치 실로폰·칼림바·오르골 같은 부드러운 톡, 화음 2~3음, 화면 공통 박 66BPM). 다른 목소리는 H 패널에서 고를 수 있음. */
+/* 코드 진행: 몇 마디마다 A → F#m → D → E. 지금 화음의 음(근음·3도·5도)으로만 스냅 → 모든 물방울이 같은 화음으로 바뀜.
+   마디 = 4박(66BPM, toy 공통 박). 기본 2마디마다(≈7.3초), ?bars=N 으로 바꿈. */
+const PROGRESSION = [
+  { name: 'A',   rootHz: 110.00, scale: 'chord' },        // A·C#·E
+  { name: 'F#m', rootHz:  92.50, scale: 'minor-chord' },  // F#·A·C#
+  { name: 'D',   rootHz: 146.83, scale: 'chord' },        // D·F#·A
+  { name: 'E',   rootHz: 164.81, scale: 'chord' },        // E·G#·B
+];
+const BPM = RULES.toy?.bpm || 66, BARS = Math.max(1, +(q.get('bars') || 2)), CHORD_SEC = BARS * 4 * 60 / BPM;
+let chordIdx = 0;
+let KEY = { rootHz: PROGRESSION[0].rootHz, scale: PROGRESSION[0].scale };
+
+/* 물방울 하나 = 독립 개체 { name, group, mesh, material, sdf, radius, voice, clay }
+   모듈은 '기준 크기'(반지름 CLAY_R)에서 돌고, 화면 크기는 clay.root.scale 로 맞춤
+   → 당김 길이·질감 크기·브러시가 물방울 크기에 비례(작은 물방울도 같은 손짓 = 같은 비율의 변형) */
+const CLAY_R = 1.2;
+function makeDroplet(L, i) {
+  const R = L.r * W, rx = R * L.sx, ry = R * L.sy, rz = R * L.flat;
+  const geo = new THREE.SphereGeometry(1, 96, 64); geo.scale(rx, ry, rz);
+  const material = makeDropMaterial({ seed: i * 2.37, soft: L.soft, wobble: 0.010 * R, fill: L.fill, tint: L.tint, pale: L.pale });
+  const mesh = new THREE.Mesh(geo, material);
+  const group = new THREE.Group(); group.add(mesh); scene.add(group);
+  const home = new THREE.Vector3((L.u - 0.5) * W, (0.5 - L.v) * H, L.z);
+  group.position.copy(home); group.rotation.z = THREE.MathUtils.degToRad(L.rot);
+  group.rotation.x = 0.12 * Math.sin(i * 1.9); group.rotation.y = 0.15 * Math.cos(i * 2.3);
+  const k = CLAY_R / R;   // 화면 단위 → 모듈 기준 단위
+  return { name: L.name, index: i, group, mesh, material, home, rotHome: group.rotation.clone(), radius: R, voice: L.voice,
+           note: L.note,
+           scale: 1 / k, sdf: ellipsoidSDF(rx * k, ry * k, rz * k), clay: null, born: -1 };
+}
+const droplets = LAYOUT.map(makeDroplet);
+window.__droplets = droplets; window.__cam = camera;
+
+/* =================================================================
+   ▼▼▼ sound-clay 붙이는 자리 (HOOK) ▼▼▼
+   물방울마다 createSoundClay 한 번. 같은 canvas 라 모듈이 알아서 한 무리로 묶음(규칙 6-3):
+   클릭·휠은 포인터 아래 가장 가까운 물방울만 · Ctrl+Z·F 브러시는 마지막에 만진 물방울만 · 만진 물방울들은 계속 노래(겹쳐서 합주)
+   ================================================================= */
+let FEEL = null;   // 감각 프리셋(아래에서 불러옴) — 모든 물방울이 같은 손맛
+const FEEL_LS = 'soundclay.droplet.feel.v1';
+function attachSoundClay(droplet) {
+  droplet.material.uniforms.uWobble.value = 0;          // 출렁임은 모듈이 맡음(이중 출렁임 방지)
+  droplet.material.uniforms.uLs.value = droplet.scale * (RULES.grid?.extent ?? 3);  // 모듈 표면 = 마칭큐브 -1..1 × extent × 기준 크기 배율 → 에센스 원 크기를 화면 길이로 맞춤
+  droplet.clay = createSoundClay({
+    THREE, MarchingCubes, parent: droplet.group, camera, canvas: renderer.domElement,
+    material: droplet.material,                          // 같은 굴절 셰이더가 마칭큐브 표면에도 그대로 먹음
+    base: SHAPES.custom(droplet.sdf),                    // 납작한 타원체(물방울 모양)
+    voice: droplet.voice, mute: MUTE, feel: FEEL,
+    rotateOnEmptyDrag: false,                            // 빈 곳 드래그가 물방울을 돌리지 않게
+    exclusiveVoice: false,                               // 만진 물방울들은 계속 노래(다른 걸 만져도 안 멈춤) — 멈추기는 '모두 멈춤'
+    key: { ...KEY }, note: droplet.note,                      // 화음 모드: 같은 키 + 이 물방울이 맡은 음(음역은 note가 정함, pitchScale은 기본 1)
+    rules: { grid: { resolution: droplet.radius > 1 ? 64 : 44 } },   // 작은 구슬은 화면에서 작으니 격자를 낮춤
+    onFeelChange: f => { saveFeel(f); feelPanel && feelPanel.refresh(); },
+  });
+  droplet.clay.root.scale.setScalar(droplet.scale);
+  droplet.mesh.visible = false;                          // 원래 메시 숨김 → 표면은 모듈의 마칭큐브
+  return droplet.clay;
+}
+function saveFeel(f) { try { localStorage.setItem(FEEL_LS, JSON.stringify(f)); } catch (_) {} }
+/* ▲▲▲ HOOK 끝 ▲▲▲ */
+
+const clays = () => droplets.filter(d => d.clay).map(d => d.clay);
+const activeDrop = () => droplets.find(d => d.clay && d.clay.active) || null;
+const targetDrop = () => activeDrop() || droplets[0];   // 아직 아무것도 안 만졌으면 큰 구슬
+
+/* ---------- 컨트롤(H 키로 표시): 목소리 · 소리 · 듣기 · 감각 · 되돌리기 ---------- */
+let feelPanel = null;
+function buildUI() {
+  const ctl = document.getElementById('ctl');
+  const btn = (label, fn) => { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; ctl.appendChild(b); return b; };
+  const sel = document.createElement('select');
+  VOICES.forEach(v => { const op = document.createElement('option'); op.value = v; op.textContent = '목소리: ' + v; sel.appendChild(op); });
+  // 형태는 그대로, 목소리만 교체(화음 모드라 새 목소리도 이 물방울이 맡은 음에서 시작)
+  sel.onchange = () => { const d = targetDrop(); d.clay.setVoice(sel.value); d.voice = sel.value; };
+  ctl.appendChild(sel);
+  const snd = btn('🔊 소리', () => { const d = targetDrop(); d.clay.state.playing ? d.clay.stop() : d.clay.start(); });
+  btn('■ 모두 멈춤', () => clays().forEach(c => c.state.playing && c.stop()));
+  /* 듣기: 마지막에 만진 물방울이 들음(크기→부풀기·음높이→위로 늘어남·음색 비율→표면 질감) */
+  let listener = null;
+  const micB = btn('🎤 내 목소리', async () => {
+    if (listener && listener.clay.listening === 'MIC') { listener.clay.stopListening(); listener = null; }
+    else { stopAllListening(); listener = targetDrop(); listener.clay.activate();
+      try { await listener.clay.listen('mic'); } catch (e) { alert('마이크를 못 열었어(내장 브라우저 창에선 막힘 → 크롬 localhost로): ' + e.message); listener = null; } }
+    showListen(); });
+  const fileB = btn('🎵 음성 파일', () => { if (listener && listener.clay.listening === 'FILE') { listener.clay.stopListening(); listener = null; showListen(); } else afile.click(); });
+  const afile = document.createElement('input'); afile.type = 'file'; afile.accept = 'audio/*'; afile.style.display = 'none'; document.body.appendChild(afile);
+  const playFile = async f => { stopAllListening(); listener = targetDrop(); listener.clay.activate();
+    try { await listener.clay.listen(f); } catch (e) { alert('음성 파일을 못 읽었어: ' + e.message); listener = null; } showListen(); };
+  afile.onchange = () => { if (afile.files[0]) playFile(afile.files[0]); afile.value = ''; };
+  addEventListener('dragover', e => e.preventDefault());
+  addEventListener('drop', e => { e.preventDefault(); const f = [...e.dataTransfer.files].find(x => x.type.startsWith('audio/') || /\.(wav|mp3|m4a|ogg|flac|webm)$/i.test(x.name)); if (f) playFile(f); });
+  function stopAllListening() { clays().forEach(c => c.listening && c.stopListening()); listener = null; }
+  function showListen() { const l = listener && listener.clay.listening;
+    micB.textContent = l === 'MIC' ? '⏹ 목소리 끄기 (' + listener.name + ')' : '🎤 내 목소리';
+    fileB.textContent = l === 'FILE' ? '⏹ 파일 끄기 (' + listener.name + ')' : '🎵 음성 파일'; }
+  const feelB = btn('감각', () => document.getElementById('feel').classList.toggle('off'));
+  btn('↺ 이 물방울 초기화', () => targetDrop().clay.reset());
+  feelPanel = buildFeelPanel(feelB);
+  return { sel, snd };
+}
+/* 감각 패널: 슬라이더 → 모든 물방울에 같은 값, 복사·파일 저장·불러오기·기본값 (원본 index.html 패널과 같은 구성) */
+function buildFeelPanel(feelB) {
+  const fp = document.getElementById('feel');
+  fp.innerHTML = '<b style="font-size:12px">감각 프리셋 (물방울 전체)</b>';
+  const setAll = f => { clays().forEach(c => c.setFeel(f)); };
+  const cur = () => (droplets[0].clay).getFeel(nameIn.value || 'droplet');
+  const rows = {};
+  const nameIn = document.createElement('input'); nameIn.type = 'text'; nameIn.value = (FEEL && FEEL.name) || '기본';
+  fp.appendChild(nameIn);
+  FEEL_SCHEMA.forEach(f => {
+    const row = document.createElement('label'), top = document.createElement('div'), name = document.createElement('span'), t = document.createElement('span');
+    name.textContent = f.label; const r = document.createElement('input'); r.type = 'range'; r.min = f.min; r.max = f.max; r.step = f.step;
+    const d = Math.max(0, -Math.floor(Math.log10(f.step)));
+    r.oninput = () => { setAll({ values: { [f.key]: +r.value } }); t.textContent = (+r.value).toFixed(d); saveFeel(cur()); };
+    top.append(name, t); row.append(top, r); fp.appendChild(row); rows[f.key] = { r, t, d };
+  });
+  const bar = document.createElement('div'); bar.className = 'bar'; fp.appendChild(bar);
+  const mkB = (label, fn) => { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; bar.appendChild(b); };
+  const refresh = () => { const v = droplets[0].clay.getFeel().values; for (const k in rows) { rows[k].r.value = v[k]; rows[k].t.textContent = (+v[k]).toFixed(rows[k].d); } };
+  mkB('복사', async () => { const s = JSON.stringify(cur(), null, 2); try { await navigator.clipboard.writeText(s); feelB.textContent = '감각 ✓복사'; setTimeout(() => feelB.textContent = '감각', 1200); } catch (_) { alert(s); } });
+  mkB('파일로 저장', () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(cur(), null, 2)], { type: 'application/json' })); a.download = `sound-clay-feel_${nameIn.value || 'droplet'}.json`; a.click(); });
+  const fileIn = document.createElement('input'); fileIn.type = 'file'; fileIn.accept = '.json,application/json'; fileIn.style.display = 'none'; fp.appendChild(fileIn);
+  fileIn.onchange = async () => { const f = fileIn.files[0]; if (!f) return; try { const j = JSON.parse(await f.text()); setAll(j); if (j.name) nameIn.value = j.name; refresh(); saveFeel(cur()); } catch (e) { alert('프리셋을 읽지 못했어: ' + e.message); } fileIn.value = ''; };
+  mkB('불러오기', () => fileIn.click());
+  mkB('기본값', () => { const v = {}; FEEL_SCHEMA.forEach(f => v[f.key] = f.key === 'stiffness' ? RULES.pull.stiffness : f.key === 'spread' ? RULES.pull.spread : f.key.split('.').reduce((a, k) => a[k], RULES));
+    if (FEEL_DEFAULT) Object.assign(v, FEEL_DEFAULT.values); setAll({ values: v }); nameIn.value = '기본'; refresh(); saveFeel(cur()); });
+  refresh();
+  return { refresh };
+}
+
+/* ---------- HUD(H 키): 활성 물방울의 MIX RATIO · SHAPE → VOICE ---------- */
+const hudEl = document.getElementById('hud');
+hudEl.innerHTML = `<div id="hName" class="row" style="margin-top:0"></div>
+  <h4>MIX RATIO</h4><div id="hF0" class="sub"></div><div class="rule"></div>` +
+  WAVES.map((w, i) => `<div class="row"><span>${w}</span><span id="hp${i}"></span></div><div class="bar" id="hb${i}" style="width:0"></div><div class="track"></div>`).join('') +
+  `<h4>SHAPE → VOICE</h4><div class="rule"></div>` +
+  [['SIZE', 'PITCH'], ['STRETCH', 'GLIDE'], ['HORN', 'TRILL'], ['LEAN', 'VIBRATO'], ['FLAT', 'NOTE LEN'], ['VOLUME', 'RING']]
+    .map(([a, b], i) => `<div class="row"><span>${a}</span><span id="hs${i}"></span></div><div class="sub">→ ${b}</div>`).join('') +
+  `<div id="hTag" class="sub" style="margin-top:8px"></div>`;
+const $ = id => document.getElementById(id);
+function drawHud() {
+  const d = targetDrop(); if (!d || !d.clay) return;
+  const c = d.clay, S = c.state, V = S.voice;
+  $('hName').innerHTML = `<span>${d.name.toUpperCase()} · ${c.voice.toUpperCase()}</span><span>${S.playing ? '♪' : (c.listening || '—')}</span>`;
+  $('hF0').textContent = S.f0 > 0 ? 'f0 ' + (S.f0 / 1000).toFixed(2) + ' kHz' : 'f0 — (no pitch)';
+  S.share.forEach((s, k) => { $('hp' + k).textContent = (s * 100).toFixed(s < 0.1 && s > 0 ? 1 : 0) + '%'; $('hb' + k).style.width = (100 * s).toFixed(1) + '%'; });
+  const v = [V.pitch, V.sweep, V.rate, V.vib, V.dur, V.ring];
+  v.forEach((x, i) => $('hs' + i).textContent = i === 3 ? '±' + x.toFixed(0) + 'Hz' : i === 5 ? (x * 100).toFixed(0) + '%' : '×' + x.toFixed(2));
+  $('hTag').textContent = 'CHORD ' + PROGRESSION[chordIdx].name + ' · ' + S.tag + ' · undo ' + c.history.undo + ' · drops ' + droplets.length;
+  if (ui) { ui.sel.value = c.voice; ui.snd.textContent = S.playing ? '🔇 소리 끄기' : '🔊 소리'; }
+}
+let showHud = q.has('hud');
+const setHud = on => { showHud = on; ['hud', 'ctl', 'hint'].forEach(id => $(id).classList.toggle('off', !on)); if (!on) $('feel').classList.add('off'); };
+addEventListener('keydown', e => { if ((e.key === 'h' || e.key === 'H') && !e.ctrlKey && !e.metaKey && !e.altKey && e.target.tagName !== 'INPUT') setHud(!showHud); });
+
+/* ---------- 시작: 감각 프리셋 불러오고 → 물방울마다 모듈 붙이기 ---------- */
+let FEEL_DEFAULT = null, ui = null, CLOCK0 = performance.now();
+fit(); addEventListener('resize', fit);
+if (CLAY_ON) {
+  try { FEEL_DEFAULT = await (await fetch('./feel/기본.json')).json(); } catch (_) {}
+  try { const s = localStorage.getItem(FEEL_LS); FEEL = s ? JSON.parse(s) : FEEL_DEFAULT; } catch (_) { FEEL = FEEL_DEFAULT; }
+  CLOCK0 = -performance.timeOrigin;                      // = 모듈의 공통 박 기준(벽시계 0초) → 코드 바뀌는 순간이 마디 경계, 조합(mix) 페이지의 다른 화면과도 같은 코드
+  droplets.forEach(attachSoundClay);
+  ui = buildUI(); setHud(showHud);
+  window.__clays = clays();
+}
+
+/* ---------- 코드 진행: CHORD_SEC 마다 다음 화음으로 키를 바꿈(모든 물방울이 같이) ---------- */
+function setChord(i) {
+  chordIdx = ((i % PROGRESSION.length) + PROGRESSION.length) % PROGRESSION.length;
+  const c = PROGRESSION[chordIdx]; KEY = { rootHz: c.rootHz, scale: c.scale };
+  clays().forEach(cl => cl.setKey({ ...KEY }));          // 물방울마다 자기 키를 갖고 있어서 전부 바꿈
+}
+function tickChord(nowMs) {
+  if (!CLAY_ON || q.get('mix') === 'A') return;          // ?mix=A(조합 페이지 고정 코드)면 진행 안 함
+  const i = Math.floor((nowMs - CLOCK0) / 1000 / CHORD_SEC) % PROGRESSION.length;
+  if (i !== chordIdx) setChord(i);
+}
+window.__chord = () => ({ idx: chordIdx, name: PROGRESSION[chordIdx].name, key: { ...KEY }, chordSec: CHORD_SEC, setChord });
+
+/* ---------- 빈 곳 클릭 → 새 구슬 ----------
+   물방울 위가 아닌 곳을 (끌지 않고) 클릭하면 그 자리에 물방울이 생기고 바로 노래 시작.
+   크기는 무작위, 작을수록 높은 음(크기 → 맡은 음). 지금 화음으로 스냅되니 어떤 음이든 화음 안에 들어감. */
+const MAX_DROPS = 18;
+let downInfo = null, spawnCount = 0;
+renderer.domElement.addEventListener('pointerdown', e => {
+  downInfo = { x: e.clientX, y: e.clientY, button: e.button, mod: e.ctrlKey || e.altKey || e.shiftKey || e.metaKey,
+               hit: clays().some(c => c._hitDist && c._hitDist(e) < Infinity) };
+});
+addEventListener('pointerup', e => {
+  const d0 = downInfo; downInfo = null;
+  if (!CLAY_ON || !d0 || d0.hit || d0.mod || d0.button !== 0) return;
+  if (Math.hypot(e.clientX - d0.x, e.clientY - d0.y) > 6) return;
+  spawnDroplet(e.clientX, e.clientY);
+});
+const noteForRadius = r => Math.min(880, Math.max(220, 220 * Math.pow(2, 2 * (0.07 - r) / 0.04)));   // 구슬 r 0.07→A3 … 0.03→A5 근처
+function spawnDroplet(cx, cy) {
+  if (droplets.length >= MAX_DROPS) return null;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2((cx - rect.left) / rect.width * 2 - 1, -(cy - rect.top) / rect.height * 2 + 1);
+  const ray = new THREE.Raycaster(); ray.setFromCamera(ndc, camera);
+  const z = 0.5 + Math.random() * 0.6, p = ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), -z), new THREE.Vector3());
+  if (!p) return null;
+  const r = 0.03 + Math.random() * 0.04, rnd = (a, b) => a + Math.random() * (b - a);
+  const L = { name: 'new' + (++spawnCount), u: p.x / W + 0.5, v: 0.5 - p.y / H, r, sx: rnd(0.92, 1.04), sy: rnd(0.94, 1.04),
+              flat: 0.92, rot: 0, z, soft: 0, fill: 1, tint: PALETTE[spawnCount % PALETTE.length], voice: 'toy', note: noteForRadius(r) };
+  const d = makeDroplet(L, droplets.length);
+  droplets.push(d); attachSoundClay(d);
+  d.born = performance.now(); d.group.scale.setScalar(0.01);
+  d.clay.activate(); d.clay.start();                    // 만든 물방울 = 만진 물방울 → 바로 노래
+  window.__clays = clays();
+  return d;
+}
+window.__spawn = spawnDroplet;
+
+/* ---------- 움직임: 천천히 떠다니고 살짝 출렁임(정지 모습 우선이라 아주 작게) ----------
+   만지는 동안(활성 물방울을 누르고 있는 동안)엔 떠다님을 멈춰 손 아래에서 미끄러지지 않게 */
+let pressing = false;
+renderer.domElement.addEventListener('pointerdown', () => pressing = true);
+addEventListener('pointerup', () => pressing = false);
+let drift = 0, last = 0;
+/* ---------- 에센스 주기(원본 sheet 핵심 순간): 약 157프레임 = 5.24초마다 반복 ----------
+   0~0.35초 오른쪽 위에 작은 초록 방울이 생김(f0·f317·f471) → 1.0~1.9초 방울이 구슬 전체로 퍼짐(peak f57·f214·f373)
+   → 3.6초까지 가득 찬 채 휘돎 → 4.8초까지 맑아짐(stop f145·f225·f381) → 5.24초까지 빈 유리
+   방울 자리 = 구슬 중심에서 오른쪽 0.48R·위 0.17R, 반지름 0.47R(원본 f0 기준) */
+const CYCLE = 5.24;
+const ease = x => x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x);
+function essenceCycle(d, t) {
+  const u = d.material.uniforms, R = d.radius, p = ((t % CYCLE) + CYCLE) % CYCLE;
+  const born = ease(p / 0.35), grow = ease((p - 1.0) / 0.9), clear = ease((p - 3.6) / 1.2);
+  u.uFill.value = born * (1 - clear);
+  u.uFillR.value = R * (0.47 * (0.6 + 0.4 * born) + (1.35 - 0.47) * grow);
+  u.uFillC.value.set(R * (0.48 - 0.42 * grow - 0.04 * ease((p - 0.35) / 0.65)), R * (0.17 - 0.15 * grow));
+}
+function frame(t) {
+  shared.uTime.value = t;
+  const dt = Math.min(0.1, t - last); last = t; if (!pressing && !STILL) drift += dt;
+  for (const d of droplets) {
+    const s = d.index * 1.618, tt = drift;
+    d.group.position.set(
+      d.home.x + 0.006 * W * Math.sin(tt * 0.5 + s) * (STILL ? 0 : 1),
+      d.home.y + 0.006 * H * Math.sin(tt * 0.43 + s * 1.3) * (STILL ? 0 : 1),
+      d.home.z);
+    d.group.rotation.z = d.rotHome.z + (STILL ? 0 : 0.05 * Math.sin(tt * 0.09 + s));
+    d.group.rotation.y = d.rotHome.y + (STILL ? 0 : 0.08 * Math.sin(tt * 0.07 + s * 0.7));
+    if (d.born >= 0) {   // 새 물방울: 0.45초 동안 톡 부풀며 나타남
+      const a = Math.min(1, (performance.now() - d.born) / 450), e = 1 + 2.2 * Math.pow(a - 1, 3) + 1.2 * Math.pow(a - 1, 2);
+      d.group.scale.setScalar(Math.max(0.01, e)); if (a >= 1) { d.group.scale.setScalar(1); d.born = -1; }
+    }
+    if (d.clay) d.clay.update(t);
+  }
+  essenceCycle(droplets[0], FIXED_T ?? t);
+  tickChord(performance.now());
+  if (showHud) drawHud();
+  renderFrame();
+}
+window.__frame = frame;   // 검증용(백그라운드 탭에서 한 프레임 직접 돌리기)
+function loop(ms) { frame(ms / 1000); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
